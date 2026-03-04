@@ -1,0 +1,112 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Kamino Lending",
+  "projectDescription": "Open source lending protocol smart contract for Solana blockchain",
+  "theme": "aspen",
+  "primaryColor": "#3B82F6",
+  "lightColor": "#60A5FA",
+  "darkColor": "#2563EB",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/reserves",
+              "concepts/obligations",
+              "concepts/collateral-and-liquidity"
+            ]
+          },
+          {
+            "group": "Integration Guide",
+            "pages": [
+              "integration/setup",
+              "integration/deposit-withdraw",
+              "integration/borrow-repay",
+              "integration/liquidations"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/flash-loans",
+              "advanced/referral-system",
+              "advanced/elevation-groups",
+              "advanced/autodeleverage"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/deployment",
+              "operations/market-management",
+              "operations/reserve-configuration",
+              "operations/monitoring"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Program Reference",
+        "groups": [
+          {
+            "group": "Instructions",
+            "pages": [
+              "reference/instructions/overview",
+              "reference/instructions/lending-market",
+              "reference/instructions/reserve",
+              "reference/instructions/obligation",
+              "reference/instructions/liquidity",
+              "reference/instructions/collateral",
+              "reference/instructions/liquidation"
+            ]
+          },
+          {
+            "group": "State Accounts",
+            "pages": [
+              "reference/accounts/lending-market",
+              "reference/accounts/reserve",
+              "reference/accounts/obligation",
+              "reference/accounts/global-config"
+            ]
+          },
+          {
+            "group": "Error Codes",
+            "pages": ["reference/errors"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Decentralized lending and borrowing on Solana",
+    "Support for multiple reserves and collateral types",
+    "Flash loan functionality",
+    "Automated liquidation and deleveraging",
+    "Referral and rewards system",
+    "Elevation groups for risk management"
+  ],
+  "publicApiSurface": [
+    "init_lending_market",
+    "init_reserve",
+    "deposit_reserve_liquidity",
+    "redeem_reserve_collateral",
+    "init_obligation",
+    "deposit_obligation_collateral",
+    "withdraw_obligation_collateral",
+    "borrow_obligation_liquidity",
+    "repay_obligation_liquidity",
+    "liquidate_obligation_and_redeem_reserve_collateral",
+    "flash_borrow_reserve_liquidity",
+    "flash_repay_reserve_liquidity",
+    "refresh_reserve",
+    "refresh_obligation"
+  ]
+}
