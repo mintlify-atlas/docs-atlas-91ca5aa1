@@ -1,0 +1,516 @@
+---
+title: 'Obligations'
+description: 'Understanding user positions, collateral deposits, borrows, and liquidation mechanics'
+---
+
+## What is an Obligation?
+
+An `Obligation` represents a user's lending position in Kamino. It tracks:
+- **Deposits**: Up to 8 different collateral types
+- **Borrows**: Up to 5 different debt positions
+- **Health Metrics**: LTV ratio, liquidation threshold, and borrow capacity
+- **Orders**: Optional limit orders for automated position management
+
+From `state/obligation.rs:28`:
+
+```rust
+pub struct Obligation {
+    pub tag: u64,
+    pub last_update: LastUpdate,
+    pub lending_market: Pubkey,
+    pub owner: Pubkey,
+    
+    // Collateral deposits (up to 8)
+    pub deposits: [ObligationCollateral; 8],
+    pub deposited_value_sf: u128,
+    pub lowest_reserve_deposit_liquidation_ltv: u64,
+    pub lowest_reserve_deposit_max_ltv_pct: u8,
+    
+    // Borrowed liquidity (up to 5)
+    pub borrows: [ObligationLiquidity; 5],
+    pub borrowed_assets_market_value_sf: u128,
+    pub borrow_factor_adjusted_debt_value_sf: u128,
+    pub allowed_borrow_value_sf: u128,
+    pub unhealthy_borrow_value_sf: u128,
+    
+    // Risk management
+    pub elevation_group: u8,
+    pub highest_borrow_factor_pct: u64,
+    pub has_debt: u8,
+    pub borrowing_disabled: u8,
+    
+    // Advanced features
+    pub referrer: Pubkey,
+    pub obligation_orders: [ObligationOrder; 2],
+    pub borrow_order: BorrowOrder,
+    pub autodeleverage_target_ltv_pct: u8,
+    pub autodeleverage_margin_call_started_timestamp: u64,
+}
+```
+
+## Obligation Initialization
+
+Obligations are created per user per lending market (from `state/obligation.rs:189`):
+
+```rust
+pub fn init(&mut self, params: InitObligationParams) {
+    self.tag = params.tag;
+    self.last_update = LastUpdate::new(params.current_slot);
+    self.lending_market = params.lending_market;
+    self.owner = params.owner;
+    self.deposits = params.deposits;
+    self.borrows = params.borrows;
+    self.referrer = params.referrer;
+}
+```
+
+**Tag System**: Obligations can have different tags (0, 1, 2) allowing users to create multiple isolated positions within the same market.
+
+## Obligation Collateral (Deposits)
+
+Each deposit slot tracks collateral in a specific reserve (from `state/obligation.rs:579`):
+
+```rust
+pub struct ObligationCollateral {
+    pub deposit_reserve: Pubkey,
+    pub deposited_amount: u64,
+    pub market_value_sf: u128,
+    pub borrowed_amount_against_this_collateral_in_elevation_group: u64,
+}
+```
+
+### Managing Deposits
+
+**Adding Collateral** (from `state/obligation.rs:311`):
+
+```rust
+pub fn find_or_add_collateral_to_deposits(
+    &mut self,
+    deposit_reserve: Pubkey,
+) -> Result<(&mut ObligationCollateral, bool)> {
+    // Find existing deposit in same reserve
+    if let Some(collateral_index) = self.deposits.iter_mut()
+        .position(|collateral| collateral.deposit_reserve == deposit_reserve) 
+    {
+        Ok((&mut self.deposits[collateral_index], false))
+    } 
+    // Or find empty slot
+    else if let Some(collateral_index) = self.deposits.iter()
+        .position(|c| !c.is_active()) 
+    {
+        let collateral = &mut self.deposits[collateral_index];
+        *collateral = ObligationCollateral::new(deposit_reserve);
+        Ok((collateral, true))
+    } 
+    else {
+        err!(LendingError::ObligationReserveLimit)  // All 8 slots full
+    }
+}
+```
+
+**Withdrawing Collateral** (from `state/obligation.rs:230`):
+
+```rust
+pub fn withdraw(
+    &mut self,
+    withdraw_amount: u64,
+    collateral_index: usize,
+) -> Result<WithdrawResult> {
+    let collateral = &mut self.deposits[collateral_index];
+    if withdraw_amount == collateral.deposited_amount {
+        // Full withdrawal - clear the slot
+        self.deposits[collateral_index] = ObligationCollateral::default();
+        Ok(WithdrawResult::Full)
+    } else {
+        // Partial withdrawal - reduce amount
+        collateral.withdraw(withdraw_amount)?;
+        Ok(WithdrawResult::Partial)
+    }
+}
+```
+
+## Obligation Liquidity (Borrows)
+
+Each borrow slot tracks debt in a specific reserve (from `state/obligation.rs:635`):
+
+```rust
+pub struct ObligationLiquidity {
+    pub borrow_reserve: Pubkey,
+    pub cumulative_borrow_rate_bsf: BigFractionBytes,
+    pub first_borrowed_at_timestamp: u64,
+    
+    pub borrowed_amount_sf: u128,
+    pub market_value_sf: u128,
+    pub borrow_factor_adjusted_market_value_sf: u128,
+    
+    pub borrowed_amount_outside_elevation_groups: u64,
+}
+```
+
+### Cumulative Borrow Rate
+
+The cumulative borrow rate tracks interest accrual. When a user borrows:
+
+1. Reserve's current `cumulative_borrow_rate` is stored
+2. As time passes, reserve's rate increases
+3. User's debt increases proportionally
+
+**Interest Accrual** (from `state/obligation.rs:694`):
+
+```rust
+pub fn accrue_interest(
+    &mut self, 
+    new_cumulative_borrow_rate: BigFraction
+) -> Result<()> {
+    let former_rate = BigFraction::from(self.cumulative_borrow_rate_bsf);
+    let new_rate = new_cumulative_borrow_rate;
+    
+    if new_rate > former_rate {
+        // Debt increases proportionally to rate increase
+        let borrowed_amount = U256::from(self.borrowed_amount_sf)
+            * new_rate.0
+            / former_rate.0;
+        
+        self.borrowed_amount_sf = borrowed_amount.try_into()?;
+        self.cumulative_borrow_rate_bsf.value = new_rate.0;
+    }
+    Ok(())
+}
+```
+
+**Example**:
+```
+Initial borrow: 100 tokens at cumulative rate 1.0
+After 1 year at 10% APY: cumulative rate becomes 1.1
+Debt = 100 * (1.1 / 1.0) = 110 tokens
+```
+
+### Managing Borrows
+
+**Adding Debt** (from `state/obligation.rs:374`):
+
+```rust
+pub fn find_or_add_liquidity_to_borrows(
+    &mut self,
+    borrow_reserve: Pubkey,
+    cumulative_borrow_rate: BigFraction,
+    current_timestamp: u64,
+) -> Result<(&mut ObligationLiquidity, usize)> {
+    // Find existing borrow or create new slot
+    if let Some(liquidity_index) = self.find_liquidity_index_in_borrows(borrow_reserve) {
+        Ok((&mut self.borrows[liquidity_index], liquidity_index))
+    } else {
+        // Find empty slot and initialize
+        let liquidity = ObligationLiquidity::new(
+            borrow_reserve,
+            cumulative_borrow_rate,
+            current_timestamp  // Record when debt started
+        );
+        // ...
+    }
+}
+```
+
+**Repaying Debt** (from `state/obligation.rs:218`):
+
+```rust
+pub fn repay(&mut self, settle_amount: Fraction, liquidity_index: usize) {
+    let liquidity = &mut self.borrows[liquidity_index];
+    if settle_amount == liquidity.borrowed_amount() {
+        // Full repayment - clear the slot
+        self.borrows[liquidity_index] = ObligationLiquidity::default();
+    } else {
+        // Partial repayment
+        liquidity.repay(settle_amount);
+    }
+}
+```
+
+## Health Checks and LTV Calculations
+
+### Loan-to-Value (LTV) Ratio
+
+The LTV ratio determines position health (from `state/obligation.rs:201`):
+
+```rust
+pub fn loan_to_value(&self) -> Fraction {
+    Fraction::from_bits(self.borrow_factor_adjusted_debt_value_sf)
+        / Fraction::from_bits(self.deposited_value_sf)
+}
+```
+
+**Components**:
+
+1. **Deposited Value** (`deposited_value_sf`):
+   - Sum of all collateral deposits valued in USD
+   - Updated during `refresh_obligation`
+
+2. **Borrow Factor Adjusted Debt** (`borrow_factor_adjusted_debt_value_sf`):
+   - Sum of all borrows × their borrow factors
+   - Borrow factor ≥ 100% creates safety buffer
+
+**Example**:
+```
+Deposits:
+  - 100 SOL @ $150 = $15,000 (max LTV 75%)
+  - 1000 USDC @ $1 = $1,000 (max LTV 90%)
+  Total deposited value: $16,000
+
+Borrows:
+  - 5,000 USDC @ 110% borrow factor = $5,500 adjusted
+  
+LTV = $5,500 / $16,000 = 34.4%
+```
+
+### Borrow Capacity
+
+The allowed borrow value is calculated from deposits and their max LTV ratios (from `state/obligation.rs:283`):
+
+```rust
+pub fn remaining_borrow_value(&self) -> Fraction {
+    Fraction::from_bits(
+        self.allowed_borrow_value_sf
+            .saturating_sub(self.borrow_factor_adjusted_debt_value_sf)
+    )
+}
+```
+
+**Allowed Borrow Value**:
+```
+allowed_borrow_value = Σ(deposit_value × reserve_max_ltv)
+```
+
+For the example above:
+```
+Allowed = ($15,000 × 75%) + ($1,000 × 90%)
+        = $11,250 + $900 
+        = $12,150
+
+Remaining capacity = $12,150 - $5,500 = $6,650
+```
+
+### Liquidation Threshold
+
+The unhealthy borrow value uses liquidation thresholds instead of max LTV (from `state/obligation.rs:212`):
+
+```rust
+pub fn unhealthy_loan_to_value(&self) -> Fraction {
+    Fraction::from_bits(self.unhealthy_borrow_value_sf)
+        / Fraction::from_bits(self.deposited_value_sf)
+}
+```
+
+**Unhealthy Borrow Value**:
+```
+unhealthy_borrow_value = Σ(deposit_value × reserve_liquidation_threshold)
+```
+
+Liquidation thresholds are typically 5-10% higher than max LTV to provide a buffer.
+
+**Example**:
+```
+SOL liquidation threshold: 80% (vs 75% max LTV)
+USDC liquidation threshold: 95% (vs 90% max LTV)
+
+Unhealthy threshold = ($15,000 × 80%) + ($1,000 × 95%)
+                    = $12,000 + $950
+                    = $12,950
+
+Unhealthy LTV = $5,500 / $16,000 = 34.4%
+Liquidation LTV = $12,950 / $16,000 = 80.9%
+```
+
+Position is liquidatable when `borrow_factor_adjusted_debt_value_sf > unhealthy_borrow_value_sf`.
+
+## Maximum Withdrawable Collateral
+
+When withdrawing, the obligation must remain healthy (from `state/obligation.rs:246`):
+
+```rust
+pub fn max_withdraw_value(
+    &self,
+    obligation_collateral: &ObligationCollateral,
+    reserve_max_ltv_pct: u8,
+    reserve_liq_threshold_pct: u8,
+    ltv_max_withdrawal_check: LtvMaxWithdrawalCheck,
+) -> Fraction {
+    let (highest_allowed_borrow_value, withdraw_collateral_ltv_pct) =
+        if ltv_max_withdrawal_check == LtvMaxWithdrawalCheck::LiquidationThreshold {
+            (
+                Fraction::from_bits(self.unhealthy_borrow_value_sf.saturating_sub(1)),
+                reserve_liq_threshold_pct,
+            )
+        } else {
+            (
+                Fraction::from_bits(self.allowed_borrow_value_sf),
+                reserve_max_ltv_pct,
+            )
+        };
+    
+    let borrow_factor_adjusted_debt_value =
+        Fraction::from_bits(self.borrow_factor_adjusted_debt_value_sf);
+    
+    if highest_allowed_borrow_value <= borrow_factor_adjusted_debt_value {
+        return Fraction::ZERO;  // Already at/over limit
+    }
+    
+    // Maximum withdraw value that keeps position healthy
+    highest_allowed_borrow_value.saturating_sub(borrow_factor_adjusted_debt_value) 
+        * 100_u128 / u128::from(withdraw_collateral_ltv_pct)
+}
+```
+
+**Formula**:
+```
+max_withdraw_value = (allowed_borrow_value - current_debt) / collateral_ltv
+```
+
+**Example** (continuing from above):
+```
+Remaining capacity: $6,650
+Withdrawing SOL (75% max LTV):
+
+max_withdraw_value = $6,650 / 0.75 = $8,867
+Max SOL to withdraw = $8,867 / $150/SOL = 59.1 SOL
+```
+
+## Liquidation Process
+
+When an obligation becomes unhealthy (LTV > liquidation threshold), it can be liquidated.
+
+### Liquidation Eligibility
+
+From `state/obligation.rs:212`:
+
+```rust
+// Position is liquidatable when:
+let is_liquidatable = 
+    self.borrow_factor_adjusted_debt_value_sf > self.unhealthy_borrow_value_sf;
+```
+
+### Liquidation Mechanics
+
+**Liquidation Bonus**: Liquidators receive a discount on the collateral they seize:
+
+```rust
+// Reserve config (state/reserve.rs:1345)
+pub min_liquidation_bonus_bps: u16,  // e.g., 500 = 5%
+pub max_liquidation_bonus_bps: u16,  // e.g., 1000 = 10%
+```
+
+Bonus increases as position becomes more unhealthy to incentivize faster liquidation.
+
+**Close Factor**: Limits how much debt can be liquidated at once:
+
+```rust
+// Lending market config (state/lending_market.rs:67)
+pub liquidation_max_debt_close_factor_pct: u8,  // Default 50%
+```
+
+### Liquidation Example
+
+```
+Position state:
+- Deposits: $16,000
+- Debt: $13,000 (adjusted)
+- Unhealthy threshold: $12,950
+- LTV: 81.25% (UNHEALTHY)
+
+Liquidation (50% close factor, 7% bonus):
+1. Liquidator repays: $13,000 × 50% = $6,500
+2. Liquidator receives: $6,500 × 1.07 = $6,955 in collateral
+3. Remaining debt: $6,500
+4. Remaining collateral: $16,000 - $6,955 = $9,045
+5. New LTV: $6,500 / $9,045 = 71.9% (HEALTHY)
+```
+
+## Elevation Groups
+
+Elevation groups create isolated lending markets with different risk parameters (from `state/obligation.rs:59`):
+
+```rust
+pub elevation_group: u8,  // 0 = none, 1-32 = group ID
+```
+
+**Benefits**:
+- Higher LTV for correlated assets (e.g., LSTs vs SOL)
+- Risk isolation from main market
+- Custom liquidation parameters per group
+
+**Restrictions**:
+- Can only use debt reserve specified by the group
+- Limited number of collateral types
+- Cannot mix with non-group positions
+
+## Auto-Deleveraging
+
+When a position approaches insolvency, it can be marked for auto-deleveraging (from `state/obligation.rs:495`):
+
+```rust
+pub fn mark_for_deleveraging(
+    &mut self, 
+    current_timestamp: u64, 
+    target_ltv_pct: u8
+) {
+    self.autodeleverage_margin_call_started_timestamp = current_timestamp;
+    self.autodeleverage_target_ltv_pct = target_ltv_pct;
+}
+```
+
+This gives the position owner time to improve their health before forced liquidation.
+
+## Obligation Orders
+
+Users can set limit orders for automated position management (from `state/obligation.rs:769`):
+
+```rust
+pub struct ObligationOrder {
+    pub condition_threshold_sf: u128,     // Trigger condition
+    pub opportunity_parameter_sf: u128,   // Amount to trade
+    pub min_execution_bonus_bps: u16,     // Min bonus for executor
+    pub max_execution_bonus_bps: u16,     // Max bonus for executor
+    pub condition_type: u8,               // LTV, price ratio, etc.
+    pub opportunity_type: u8,             // Deleverage, rebalance, etc.
+}
+```
+
+**Example Use Cases**:
+- Auto-deleverage when LTV > 70%
+- Rebalance when debt/collateral price ratio changes
+- Take profit at specific price levels
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Position Management">
+    - Keep LTV below 60% for volatile assets
+    - Diversify collateral across multiple assets
+    - Monitor liquidation threshold, not just max LTV
+    - Set up obligation orders for automatic deleveraging
+  </Accordion>
+  
+  <Accordion title="Risk Mitigation">
+    - Account for borrow factors when calculating capacity
+    - Leave buffer before liquidation threshold (10%+)
+    - Refresh obligations regularly to update prices
+    - Use elevation groups for correlated asset strategies
+  </Accordion>
+  
+  <Accordion title="Gas Optimization">
+    - Batch deposits and borrows when possible
+    - Close fully repaid borrow slots to free space
+    - Limit number of active positions (deposits + borrows)
+    - Use combined instructions (deposit + borrow in one tx)
+  </Accordion>
+</AccordionGroup>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Reserves" icon="building-columns" href="/concepts/reserves">
+    Learn about reserve configuration and interest rates
+  </Card>
+  <Card title="Collateral & Liquidity" icon="chart-line" href="/concepts/collateral-and-liquidity">
+    Deep dive into LTV calculations and liquidation mechanics
+  </Card>
+</CardGroup>

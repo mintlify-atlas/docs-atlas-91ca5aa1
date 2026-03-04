@@ -1,0 +1,252 @@
+---
+title: 'Protocol Architecture'
+description: 'Overview of the Kamino Lending protocol architecture and core components'
+---
+
+## Overview
+
+Kamino Lending is a Solana-based lending protocol built using the Anchor framework. The protocol enables users to deposit assets as collateral, borrow against them, and earn yield on deposits through a sophisticated interest rate mechanism.
+
+## Core Components
+
+The protocol architecture consists of three primary on-chain account types that work together:
+
+### 1. LendingMarket
+
+The `LendingMarket` is the top-level account that governs the entire lending protocol instance. Each market can contain multiple reserves and manages global parameters.
+
+**Key Fields** (from `state/lending_market.rs:29`):
+
+```rust
+pub struct LendingMarket {
+    pub version: u64,
+    pub lending_market_owner: Pubkey,
+    pub quote_currency: [u8; 32],
+    pub referral_fee_bps: u16,
+    pub emergency_mode: u8,
+    pub elevation_groups: [ElevationGroup; 32],
+    pub global_allowed_borrow_value: u64,
+    // ... additional configuration fields
+}
+```
+
+**Responsibilities:**
+- Global protocol configuration (borrowing limits, liquidation parameters)
+- Emergency controls and governance
+- Elevation group management for isolated lending markets
+- Referral fee distribution settings
+
+### 2. Reserve
+
+A `Reserve` represents a single asset market within a lending market. Each reserve tracks liquidity, collateral, and interest rate state for one token type.
+
+**Key Fields** (from `state/reserve.rs:61`):
+
+```rust
+pub struct Reserve {
+    pub version: u64,
+    pub last_update: LastUpdate,
+    pub lending_market: Pubkey,
+    pub liquidity: ReserveLiquidity,
+    pub collateral: ReserveCollateral,
+    pub config: ReserveConfig,
+    // ... additional state fields
+}
+```
+
+**Responsibilities:**
+- Tracking available and borrowed liquidity
+- Managing collateral token (cToken) minting and burning
+- Calculating interest rates based on utilization
+- Enforcing deposit and borrow limits
+
+### 3. Obligation
+
+An `Obligation` represents a user's position, containing their deposits (collateral) and borrows across multiple reserves.
+
+**Key Fields** (from `state/obligation.rs:28`):
+
+```rust
+pub struct Obligation {
+    pub tag: u64,
+    pub last_update: LastUpdate,
+    pub lending_market: Pubkey,
+    pub owner: Pubkey,
+    pub deposits: [ObligationCollateral; 8],
+    pub borrows: [ObligationLiquidity; 5],
+    pub deposited_value_sf: u128,
+    pub borrow_factor_adjusted_debt_value_sf: u128,
+    // ... health and liquidation fields
+}
+```
+
+**Responsibilities:**
+- Tracking user's collateral deposits across up to 8 reserves
+- Tracking user's borrows across up to 5 reserves
+- Calculating position health (LTV ratios)
+- Enforcing liquidation thresholds
+
+## Architectural Hierarchy
+
+```
+LendingMarket
+├── Reserve (Asset A)
+│   ├── ReserveLiquidity (supply vault, borrowed amounts)
+│   ├── ReserveCollateral (cToken mint, supply)
+│   └── ReserveConfig (rates, limits, fees)
+├── Reserve (Asset B)
+│   └── ...
+└── Reserve (Asset C)
+    └── ...
+
+Obligation (User Position)
+├── ObligationCollateral[] (deposits in reserves)
+│   ├── deposit_reserve: Pubkey → links to Reserve
+│   ├── deposited_amount: u64
+│   └── market_value_sf: u128
+└── ObligationLiquidity[] (borrows from reserves)
+    ├── borrow_reserve: Pubkey → links to Reserve
+    ├── borrowed_amount_sf: u128
+    └── cumulative_borrow_rate_bsf: BigFractionBytes
+```
+
+## Instruction Flow
+
+The protocol supports the following primary operations (defined in `lib.rs:34`):
+
+### Deposit Flow
+
+1. **`deposit_reserve_liquidity`** - Deposit tokens into a reserve
+   - User transfers tokens to reserve's supply vault
+   - Reserve mints cTokens (collateral tokens) to user
+   - Increases reserve's `total_available_amount`
+
+2. **`deposit_obligation_collateral`** - Deposit cTokens as collateral in obligation
+   - User transfers cTokens to reserve's collateral vault
+   - Updates obligation's deposits array
+   - Increases borrowing capacity
+
+### Borrow Flow
+
+3. **`refresh_reserve`** - Update reserve interest and prices
+   - Accrues interest based on time elapsed
+   - Updates cumulative borrow rate
+   - Refreshes oracle prices
+
+4. **`refresh_obligation`** - Update obligation health
+   - Recalculates deposited value
+   - Recalculates borrowed value with interest
+   - Updates LTV and liquidation thresholds
+
+5. **`borrow_obligation_liquidity`** - Borrow tokens against collateral
+   - Validates borrowing capacity (LTV check)
+   - Transfers tokens from reserve to user
+   - Updates obligation's borrows array
+   - Applies origination fees
+
+### Repay Flow
+
+6. **`repay_obligation_liquidity`** - Repay borrowed tokens
+   - User transfers tokens to reserve
+   - Reduces borrowed amount in obligation
+   - Decreases reserve's borrowed amount
+
+### Withdraw Flow
+
+7. **`withdraw_obligation_collateral`** - Withdraw cTokens from obligation
+   - Validates position remains healthy
+   - Transfers cTokens back to user
+   - Updates obligation's deposits
+
+8. **`redeem_reserve_collateral`** - Redeem cTokens for underlying tokens
+   - Burns cTokens
+   - Transfers underlying tokens to user
+   - Decreases collateral supply
+
+### Liquidation Flow
+
+9. **`liquidate_obligation_and_redeem_reserve_collateral`** - Liquidate unhealthy position
+   - Validates obligation is underwater (LTV > liquidation threshold)
+   - Liquidator repays portion of debt
+   - Liquidator receives collateral at discount (liquidation bonus)
+   - Updates both obligation and reserves
+
+## State Updates and Interest Accrual
+
+All reserve operations trigger interest accrual (see `state/reserve.rs:455`):
+
+```rust
+pub fn accrue_interest(&mut self, current_slot: Slot, referral_fee_bps: u16) -> Result<()> {
+    let slots_elapsed = self.last_update.slots_elapsed(current_slot)?;
+    if slots_elapsed > 0 {
+        let current_borrow_rate = self.current_borrow_rate()?;
+        let protocol_take_rate = Fraction::from_percent(self.config.protocol_take_rate_pct);
+        
+        self.liquidity.compound_interest(
+            current_borrow_rate,
+            slots_elapsed,
+            protocol_take_rate,
+            // ...
+        )?;
+    }
+    Ok(())
+}
+```
+
+Interest compounds continuously based on:
+- Current utilization rate
+- Borrow rate curve configuration
+- Time elapsed (in Solana slots)
+- Protocol and referral fees
+
+## Security Features
+
+### Emergency Mode
+
+The lending market can enter emergency mode to pause operations:
+
+```rust
+#[access_control(emergency_mode_disabled(&ctx.accounts.lending_market))]
+pub fn deposit_reserve_liquidity(...) -> Result<()>
+```
+
+### Elevation Groups
+
+Isolated lending markets within a single lending market, allowing different risk parameters for different asset classes:
+
+- Maximum 32 elevation groups per market
+- Each group can have custom LTV and liquidation thresholds
+- Restricts cross-collateralization between groups
+
+### Refresh Requirements
+
+Obligations and reserves must be refreshed before operations to ensure:
+- Latest oracle prices are used
+- Interest has been properly accrued
+- Position health is accurately calculated
+
+## Program IDs
+
+The protocol uses different program IDs for different environments (from `lib.rs:17`):
+
+```rust
+#[cfg(feature = "staging")]
+declare_id!("SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh");
+
+#[cfg(not(feature = "staging"))]
+declare_id!("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Reserves" icon="building-columns" href="/concepts/reserves">
+    Learn about reserve configuration, interest rates, and liquidity management
+  </Card>
+  <Card title="Obligations" icon="scale-balanced" href="/concepts/obligations">
+    Understand user positions, health calculations, and liquidations
+  </Card>
+  <Card title="Collateral & Liquidity" icon="chart-line" href="/concepts/collateral-and-liquidity">
+    Deep dive into LTV ratios, liquidation thresholds, and utilization
+  </Card>
+</CardGroup>

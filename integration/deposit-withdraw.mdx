@@ -1,0 +1,476 @@
+---
+title: "Deposit & Withdraw"
+description: "Learn how to deposit liquidity and withdraw collateral from Kamino Lending"
+---
+
+## Overview
+
+Kamino Lending uses a collateral token (cToken) system. When you deposit liquidity into a reserve, you receive cTokens representing your share. These cTokens can be:
+1. **Redeemed** directly for liquidity (without using as collateral)
+2. **Deposited** into an obligation to use as collateral for borrowing
+3. **Withdrawn** from an obligation and redeemed
+
+## Deposit Reserve Liquidity
+
+Deposit tokens into a reserve and receive collateral tokens (cTokens).
+
+### Instruction: `deposit_reserve_liquidity`
+
+<CodeGroup>
+```rust handler_deposit_reserve_liquidity.rs
+pub fn process(ctx: Context<DepositReserveLiquidity>, liquidity_amount: u64) -> Result<()> {
+    // Validates deposit checks
+    lending_checks::deposit_reserve_liquidity_checks(/* ... */)?;
+    
+    let clock = Clock::get()?;
+    let reserve = &mut ctx.accounts.reserve.load_mut()?;
+    let lending_market = &ctx.accounts.lending_market.load()?;
+    
+    // Refresh reserve interest and prices
+    refresh_reserve(reserve, &clock, None, lending_market.referral_fee_bps)?;
+    
+    // Calculate collateral tokens to mint
+    let DepositLiquidityResult {
+        liquidity_amount,
+        collateral_amount,
+    } = lending_operations::deposit_reserve_liquidity(reserve, &clock, liquidity_amount)?;
+    
+    // Transfer liquidity tokens and mint collateral tokens
+    token_transfer::deposit_reserve_liquidity_transfer(
+        ctx.accounts.user_source_liquidity.to_account_info(),
+        ctx.accounts.reserve_liquidity_supply.to_account_info(),
+        ctx.accounts.owner.to_account_info(),
+        // ... mints collateral_amount to user_destination_collateral
+    )?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+import { PublicKey, SystemProgram, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '@solana/spl-token';
+
+async function depositReserveLiquidity(
+  program: Program,
+  user: Keypair,
+  reserve: PublicKey,
+  lendingMarket: PublicKey,
+  amount: number
+) {
+  const reserveData = await program.account.reserve.fetch(reserve);
+  
+  // Get lending market authority PDA
+  const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('lma'), lendingMarket.toBuffer()],
+    program.programId
+  );
+  
+  // Get user token accounts
+  const userSourceLiquidity = await getAssociatedTokenAddress(
+    reserveData.liquidity.mintPubkey,
+    user.publicKey
+  );
+  
+  const userDestinationCollateral = await getAssociatedTokenAddress(
+    reserveData.collateral.mintPubkey,
+    user.publicKey
+  );
+  
+  await program.methods
+    .depositReserveLiquidity(new BN(amount))
+    .accounts({
+      owner: user.publicKey,
+      reserve: reserve,
+      lendingMarket: lendingMarket,
+      lendingMarketAuthority: lendingMarketAuthority,
+      reserveLiquidityMint: reserveData.liquidity.mintPubkey,
+      reserveLiquiditySupply: reserveData.liquidity.supplyVault,
+      reserveCollateralMint: reserveData.collateral.mintPubkey,
+      userSourceLiquidity: userSourceLiquidity,
+      userDestinationCollateral: userDestinationCollateral,
+      collateralTokenProgram: TOKEN_PROGRAM_ID,
+      liquidityTokenProgram: TOKEN_PROGRAM_ID,
+      instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+    })
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+pub struct DepositReserveLiquidity<'info> {
+    pub owner: Signer<'info>,
+    
+    #[account(mut, has_one = lending_market)]
+    pub reserve: AccountLoader<'info, Reserve>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    #[account(
+        seeds = [seeds::LENDING_MARKET_AUTH, lending_market.key().as_ref()],
+        bump = lending_market.load()?.bump_seed as u8,
+    )]
+    pub lending_market_authority: AccountInfo<'info>,
+    
+    #[account(address = reserve.load()?.liquidity.mint_pubkey)]
+    pub reserve_liquidity_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(mut, address = reserve.load()?.liquidity.supply_vault)]
+    pub reserve_liquidity_supply: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut, address = reserve.load()?.collateral.mint_pubkey)]
+    pub reserve_collateral_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(mut, token::mint = reserve_liquidity_supply.mint)]
+    pub user_source_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut, token::mint = reserve_collateral_mint.key())]
+    pub user_destination_collateral: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    pub collateral_token_program: Program<'info, Token>,
+    pub liquidity_token_program: Interface<'info, TokenInterface>,
+    
+    #[account(address = SysInstructions::id())]
+    pub instruction_sysvar_account: AccountInfo<'info>,
+}
+```
+
+## Redeem Reserve Collateral
+
+Burn cTokens to withdraw liquidity from a reserve (without obligation involvement).
+
+### Instruction: `redeem_reserve_collateral`
+
+<CodeGroup>
+```rust handler_redeem_reserve_collateral.rs
+pub fn process(ctx: Context<RedeemReserveCollateral>, collateral_amount: u64) -> Result<()> {
+    lending_checks::redeem_reserve_collateral_checks(/* ... */)?;
+    
+    let reserve = &mut ctx.accounts.reserve.load_mut()?;
+    let lending_market = &ctx.accounts.lending_market.load()?;
+    let clock = Clock::get()?;
+    
+    // Refresh reserve
+    lending_operations::refresh_reserve(reserve, &clock, None, lending_market.referral_fee_bps)?;
+    
+    // Calculate liquidity to withdraw
+    let withdraw_liquidity_amount = lending_operations::redeem_reserve_collateral(
+        reserve,
+        collateral_amount,
+        &clock,
+        RedeemCollateralOptions::REGULAR,
+    )?;
+    
+    // Burn collateral tokens and transfer liquidity
+    token_transfer::redeem_reserve_collateral_transfer(
+        // Burns collateral_amount from user_source_collateral
+        // Transfers withdraw_liquidity_amount to user_destination_liquidity
+    )?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function redeemReserveCollateral(
+  program: Program,
+  user: Keypair,
+  reserve: PublicKey,
+  lendingMarket: PublicKey,
+  collateralAmount: number
+) {
+  const reserveData = await program.account.reserve.fetch(reserve);
+  
+  const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('lma'), lendingMarket.toBuffer()],
+    program.programId
+  );
+  
+  const userSourceCollateral = await getAssociatedTokenAddress(
+    reserveData.collateral.mintPubkey,
+    user.publicKey
+  );
+  
+  const userDestinationLiquidity = await getAssociatedTokenAddress(
+    reserveData.liquidity.mintPubkey,
+    user.publicKey
+  );
+  
+  await program.methods
+    .redeemReserveCollateral(new BN(collateralAmount))
+    .accounts({
+      owner: user.publicKey,
+      lendingMarket: lendingMarket,
+      reserve: reserve,
+      lendingMarketAuthority: lendingMarketAuthority,
+      reserveLiquidityMint: reserveData.liquidity.mintPubkey,
+      reserveCollateralMint: reserveData.collateral.mintPubkey,
+      reserveLiquiditySupply: reserveData.liquidity.supplyVault,
+      userSourceCollateral: userSourceCollateral,
+      userDestinationLiquidity: userDestinationLiquidity,
+      collateralTokenProgram: TOKEN_PROGRAM_ID,
+      liquidityTokenProgram: TOKEN_PROGRAM_ID,
+      instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+    })
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+## Deposit Obligation Collateral
+
+Deposit cTokens into an obligation to use as collateral for borrowing.
+
+### Instruction: `deposit_obligation_collateral_v2`
+
+<CodeGroup>
+```rust handler_deposit_obligation_collateral.rs
+fn process_impl(accounts: &DepositObligationCollateral, collateral_amount: u64) -> Result<()> {
+    lending_checks::deposit_obligation_collateral_checks(/* ... */)?;
+    
+    let clock = Clock::get()?;
+    let lending_market = &accounts.lending_market.load()?;
+    let deposit_reserve = &mut accounts.deposit_reserve.load_mut()?;
+    let obligation = &mut accounts.obligation.load_mut()?;
+    
+    // Refresh reserve
+    lending_operations::refresh_reserve(
+        deposit_reserve,
+        &clock,
+        None,
+        lending_market.referral_fee_bps,
+    )?;
+    
+    // Add collateral to obligation
+    lending_operations::deposit_obligation_collateral(
+        lending_market,
+        deposit_reserve,
+        obligation,
+        clock.slot,
+        collateral_amount,
+        accounts.deposit_reserve.key(),
+        MaxReservesAsCollateralCheck::Perform,
+    )?;
+    
+    // Transfer cTokens from user to reserve collateral vault
+    token_transfer::deposit_obligation_collateral_transfer(
+        accounts.user_source_collateral.to_account_info(),
+        accounts.reserve_destination_collateral.to_account_info(),
+        accounts.owner.to_account_info(),
+        accounts.token_program.to_account_info(),
+        collateral_amount,
+    )?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function depositObligationCollateral(
+  program: Program,
+  user: Keypair,
+  obligation: PublicKey,
+  depositReserve: PublicKey,
+  lendingMarket: PublicKey,
+  collateralAmount: number
+) {
+  const reserveData = await program.account.reserve.fetch(depositReserve);
+  
+  const userSourceCollateral = await getAssociatedTokenAddress(
+    reserveData.collateral.mintPubkey,
+    user.publicKey
+  );
+  
+  await program.methods
+    .depositObligationCollateralV2(new BN(collateralAmount))
+    .accounts({
+      depositAccounts: {
+        owner: user.publicKey,
+        obligation: obligation,
+        lendingMarket: lendingMarket,
+        depositReserve: depositReserve,
+        reserveDestinationCollateral: reserveData.collateral.supplyVault,
+        userSourceCollateral: userSourceCollateral,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+      },
+      // farms accounts (optional)
+    })
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+pub struct DepositObligationCollateral<'info> {
+    pub owner: Signer<'info>,
+    
+    #[account(mut, has_one = owner, has_one = lending_market)]
+    pub obligation: AccountLoader<'info, Obligation>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    #[account(mut, has_one = lending_market)]
+    pub deposit_reserve: AccountLoader<'info, Reserve>,
+    
+    #[account(mut, address = deposit_reserve.load()?.collateral.supply_vault)]
+    pub reserve_destination_collateral: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut, token::mint = deposit_reserve.load()?.collateral.mint_pubkey)]
+    pub user_source_collateral: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    pub token_program: Program<'info, Token>,
+    
+    #[account(address = SysInstructions::id())]
+    pub instruction_sysvar_account: AccountInfo<'info>,
+}
+```
+
+## Withdraw Obligation Collateral
+
+Withdraw cTokens from an obligation (must maintain healthy LTV ratio).
+
+### Instruction: `withdraw_obligation_collateral_v2`
+
+<CodeGroup>
+```rust handler_withdraw_obligation_collateral.rs
+fn process_impl(accounts: &WithdrawObligationCollateral, collateral_amount: u64) -> Result<()> {
+    let withdraw_reserve = &mut accounts.withdraw_reserve.load_mut()?;
+    let obligation = &mut accounts.obligation.load_mut()?;
+    let lending_market = &mut accounts.lending_market.load()?;
+    let clock = &Clock::get()?;
+    
+    // Calculate withdrawal amount and validate health
+    let withdraw_amount = lending_operations::withdraw_obligation_collateral(
+        lending_market,
+        withdraw_reserve,
+        obligation,
+        collateral_amount,
+        clock.slot,
+        accounts.withdraw_reserve.key(),
+        LtvMaxWithdrawalCheck::MaxLtv, // Ensures healthy LTV after withdrawal
+    )?;
+    
+    // Transfer cTokens from reserve to user
+    let lending_market_key = accounts.lending_market.key();
+    let authority_signer_seeds = gen_signer_seeds!(
+        lending_market_key,
+        lending_market.bump_seed as u8
+    );
+    
+    token_transfer::withdraw_obligation_collateral_transfer(
+        accounts.token_program.to_account_info(),
+        accounts.user_destination_collateral.to_account_info(),
+        accounts.reserve_source_collateral.to_account_info(),
+        accounts.lending_market_authority.clone(),
+        authority_signer_seeds,
+        withdraw_amount,
+    )?;
+    
+    // Close obligation if no deposits or borrows remain
+    let close_obligation = obligation.is_active_deposits_empty() 
+        && obligation.is_active_borrows_empty();
+    
+    close_account_loader(close_obligation, &accounts.owner, &accounts.obligation)?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function withdrawObligationCollateral(
+  program: Program,
+  user: Keypair,
+  obligation: PublicKey,
+  withdrawReserve: PublicKey,
+  lendingMarket: PublicKey,
+  collateralAmount: number
+) {
+  const reserveData = await program.account.reserve.fetch(withdrawReserve);
+  
+  const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('lma'), lendingMarket.toBuffer()],
+    program.programId
+  );
+  
+  const userDestinationCollateral = await getAssociatedTokenAddress(
+    reserveData.collateral.mintPubkey,
+    user.publicKey
+  );
+  
+  await program.methods
+    .withdrawObligationCollateralV2(new BN(collateralAmount))
+    .accounts({
+      withdrawAccounts: {
+        owner: user.publicKey,
+        obligation: obligation,
+        lendingMarket: lendingMarket,
+        lendingMarketAuthority: lendingMarketAuthority,
+        withdrawReserve: withdrawReserve,
+        reserveSourceCollateral: reserveData.collateral.supplyVault,
+        userDestinationCollateral: userDestinationCollateral,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+      },
+      // farms accounts (optional)
+    })
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+## Complete Deposit-to-Borrow Flow
+
+<Steps>
+  <Step title="Deposit Liquidity">
+    Call `deposit_reserve_liquidity` to deposit tokens and receive cTokens
+  </Step>
+  
+  <Step title="Initialize Obligation (if needed)">
+    Create an obligation account to track your borrows and collateral
+  </Step>
+  
+  <Step title="Deposit Collateral">
+    Call `deposit_obligation_collateral_v2` to add cTokens as collateral
+  </Step>
+  
+  <Step title="Ready to Borrow">
+    You can now borrow against your collateral (see Borrow & Repay guide)
+  </Step>
+</Steps>
+
+## Error Handling
+
+```typescript
+try {
+  await depositReserveLiquidity(/* ... */);
+} catch (error) {
+  if (error.message.includes('InsufficientLiquidity')) {
+    console.error('Reserve has insufficient liquidity');
+  } else if (error.message.includes('InvalidAmount')) {
+    console.error('Invalid deposit amount');
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Borrow & Repay" icon="hand-holding-dollar" href="/integration/borrow-repay">
+    Learn how to borrow against your collateral
+  </Card>
+  <Card title="Liquidations" icon="gavel" href="/integration/liquidations">
+    Understand liquidation mechanics
+  </Card>
+</CardGroup>

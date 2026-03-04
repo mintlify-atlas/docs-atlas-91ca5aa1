@@ -1,0 +1,190 @@
+---
+title: 'Deployment'
+description: 'Deploy and configure Kamino Lending on Solana'
+---
+
+## Overview
+
+Kamino Lending is deployed as an Anchor program on Solana. The program is already deployed to mainnet and devnet at well-known program IDs. This guide covers deployment for testing environments and configuration management.
+
+## Program IDs
+
+Kamino Lending uses different program IDs for staging and production:
+
+- **Production**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+- **Staging**: `SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh`
+- **Localnet**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD` (configurable)
+
+These IDs are defined in `programs/klend/src/lib.rs` using Anchor's `declare_id!` macro.
+
+## Anchor Configuration
+
+The `Anchor.toml` file configures the build and deployment settings:
+
+```toml
+[programs.localnet]
+klend = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "/wallet.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+```
+
+### Key Configuration Options
+
+- **cluster**: Target deployment cluster (localnet, devnet, mainnet-beta)
+- **wallet**: Path to deployer wallet keypair
+- **programs**: Maps program names to their on-chain addresses
+
+## Building the Program
+
+Build the Kamino Lending program using Anchor:
+
+```bash
+anchor build
+```
+
+This compiles the Rust program and generates:
+- Program binary in `target/deploy/`
+- IDL (Interface Definition Language) file in `target/idl/`
+- TypeScript client in `target/types/`
+
+### Build Features
+
+The program supports conditional compilation:
+
+```bash
+# Build for staging
+anchor build -- --features staging
+
+# Build without entrypoint (for testing)
+anchor build -- --no-default-features
+```
+
+## Deploying to Localnet
+
+For local testing and development:
+
+```bash
+# Start local validator
+solana-test-validator
+
+# Deploy program
+anchor deploy --provider.cluster localnet
+```
+
+## Deploying to Devnet
+
+Update `Anchor.toml` to target devnet:
+
+```toml
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+```
+
+Then deploy:
+
+```bash
+anchor deploy --provider.cluster devnet
+```
+
+## Program Upgrades
+
+### Upgrade Authority
+
+The program upgrade authority controls who can upgrade the deployed program. Set this carefully:
+
+```bash
+# View current upgrade authority
+solana program show <PROGRAM_ID>
+
+# Set new upgrade authority
+solana program set-upgrade-authority <PROGRAM_ID> \
+  --new-upgrade-authority <NEW_AUTHORITY_PUBKEY>
+```
+
+<Warning>
+**Critical**: Never lose access to the upgrade authority keypair. Consider using a multisig for production deployments.
+</Warning>
+
+### Performing Upgrades
+
+```bash
+# Build new version
+anchor build
+
+# Upgrade program
+solana program deploy target/deploy/klend.so \
+  --program-id <PROGRAM_ID> \
+  --upgrade-authority <AUTHORITY_KEYPAIR>
+```
+
+### Program Versioning
+
+Kamino Lending tracks the program version in `utils/consts.rs`:
+
+```rust
+pub const PROGRAM_VERSION: u16 = 200; // Version 2.0.0
+```
+
+Reserves and lending markets store their version and can be checked for compatibility. See `handler_refresh_reserve.rs:19` for version validation.
+
+## Security Considerations
+
+### Audits
+
+Kamino Lending has been audited by:
+- OtterSec
+- Offside Labs
+- Certora
+- Sec3
+
+Security policy: https://github.com/Kamino-Finance/audits/blob/master/docs/SECURITY.md
+
+### Security Contact
+
+Report security issues to: security@kamino.finance
+
+### Immutable Markets
+
+Once a lending market is set to immutable (via `UpdateLendingMarketMode::UpdateImmutableFlag`), most configuration changes are prevented. This provides additional security guarantees for users.
+
+## Post-Deployment Steps
+
+1. **Initialize Global Config**: Create the global configuration account using `init_global_config`
+2. **Create Lending Market**: Initialize at least one lending market using `init_lending_market`
+3. **Add Reserves**: Initialize reserves for each supported token using `init_reserve`
+4. **Configure Parameters**: Set appropriate LTV ratios, interest rates, and limits
+5. **Verify Configuration**: Test all operations on devnet before mainnet deployment
+
+## Testing Deployments
+
+Run the test suite against your deployment:
+
+```bash
+# Run all tests
+anchor test
+
+# Run specific test file
+anchor test tests/specific-test.ts
+
+# Skip local validator (test against existing deployment)
+anchor test --skip-local-validator
+```
+
+## Monitoring Deployment Health
+
+After deployment, monitor:
+- Program upgrade authority ownership
+- Account rent status (all PDAs should be rent-exempt)
+- Initial market and reserve configurations
+- Admin key security
+
+See [Monitoring](/operations/monitoring) for operational monitoring strategies.

@@ -1,0 +1,230 @@
+---
+title: "Setup & Integration"
+description: "Set up your environment to integrate with Kamino Lending protocol"
+---
+
+## Overview
+
+Kamino Lending (KLend) is a Solana-based lending protocol built with Anchor. This guide covers setting up your environment to interact with the protocol.
+
+## Program IDs
+
+The Kamino Lending program is deployed on both mainnet and staging environments:
+
+```rust
+// Mainnet Program ID
+KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD
+
+// Staging/Devnet Program ID
+SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh
+```
+
+## Dependencies
+
+<Steps>
+  <Step title="Install Anchor Framework">
+    Add Anchor dependencies to your `Cargo.toml`:
+
+    ```toml Cargo.toml
+    [dependencies]
+    anchor-lang = { version = "0.29.0", features = ["event-cpi"] }
+    anchor-spl = "0.29.0"
+    solana-program = "1.17"
+    ```
+  </Step>
+
+  <Step title="Add Kamino Lending Program">
+    For CPI (Cross-Program Invocation) integration:
+
+    ```toml Cargo.toml
+    [dependencies]
+    kamino-lending = { git = "https://github.com/Kamino-Finance/klend.git", features = ["cpi"] }
+    ```
+  </Step>
+
+  <Step title="Install TypeScript SDK (Optional)">
+    For client-side integration:
+
+    ```bash
+    npm install @kamino-finance/klend-sdk @solana/web3.js @coral-xyz/anchor
+    ```
+  </Step>
+</Steps>
+
+## Initialize Connection
+
+### TypeScript/JavaScript
+
+```typescript
+import { Connection, PublicKey, clusterApiUrl } from '@solana/web3.js';
+import { Program, AnchorProvider } from '@coral-xyz/anchor';
+
+// Connect to Solana
+const connection = new Connection(clusterApiUrl('mainnet-beta'), 'confirmed');
+
+// Kamino Lending Program ID
+const KLEND_PROGRAM_ID = new PublicKey('KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD');
+
+// Initialize provider
+const provider = new AnchorProvider(
+  connection,
+  wallet,
+  AnchorProvider.defaultOptions()
+);
+
+// Load program
+const program = new Program(IDL, KLEND_PROGRAM_ID, provider);
+```
+
+### Rust (On-chain CPI)
+
+```rust
+use anchor_lang::prelude::*;
+use kamino_lending::{
+    program::KaminoLending,
+    state::{LendingMarket, Reserve, Obligation},
+};
+
+declare_id!("YourProgramIdHere");
+
+#[program]
+pub mod your_protocol {
+    use super::*;
+
+    pub fn integrate_with_klend(ctx: Context<IntegrateKlend>) -> Result<()> {
+        // Your integration logic here
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct IntegrateKlend<'info> {
+    pub klend_program: Program<'info, KaminoLending>,
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    pub reserve: AccountLoader<'info, Reserve>,
+    // ... other accounts
+}
+```
+
+## Cross-Program Invocation (CPI) Setup
+
+To call Kamino Lending from another Solana program:
+
+<Steps>
+  <Step title="Import CPI Module">
+    ```rust
+    use kamino_lending::{
+        cpi::accounts::DepositReserveLiquidity,
+        cpi::deposit_reserve_liquidity,
+        program::KaminoLending,
+    };
+    ```
+  </Step>
+
+  <Step title="Build CPI Context">
+    ```rust
+    pub fn perform_deposit_cpi(
+        ctx: Context<YourInstruction>,
+        amount: u64,
+    ) -> Result<()> {
+        let cpi_accounts = DepositReserveLiquidity {
+            owner: ctx.accounts.user.to_account_info(),
+            reserve: ctx.accounts.reserve.to_account_info(),
+            lending_market: ctx.accounts.lending_market.to_account_info(),
+            lending_market_authority: ctx.accounts.lending_market_authority.to_account_info(),
+            reserve_liquidity_mint: ctx.accounts.reserve_liquidity_mint.to_account_info(),
+            reserve_liquidity_supply: ctx.accounts.reserve_liquidity_supply.to_account_info(),
+            reserve_collateral_mint: ctx.accounts.reserve_collateral_mint.to_account_info(),
+            user_source_liquidity: ctx.accounts.user_source_liquidity.to_account_info(),
+            user_destination_collateral: ctx.accounts.user_destination_collateral.to_account_info(),
+            collateral_token_program: ctx.accounts.token_program.to_account_info(),
+            liquidity_token_program: ctx.accounts.token_program.to_account_info(),
+            instruction_sysvar_account: ctx.accounts.instruction_sysvar.to_account_info(),
+        };
+
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.klend_program.to_account_info(),
+            cpi_accounts,
+        );
+
+        deposit_reserve_liquidity(cpi_ctx, amount)?;
+        Ok(())
+    }
+    ```
+  </Step>
+
+  <Step title="Handle Instruction Sysvar">
+    The protocol uses instruction introspection for security checks:
+
+    ```rust
+    use anchor_lang::solana_program::sysvar::{
+        instructions::Instructions as SysInstructions,
+        SysvarId,
+    };
+
+    #[derive(Accounts)]
+    pub struct YourInstruction<'info> {
+        // ... other accounts
+        
+        /// CHECK: Instruction sysvar
+        #[account(address = SysInstructions::id())]
+        pub instruction_sysvar_account: AccountInfo<'info>,
+    }
+    ```
+  </Step>
+</Steps>
+
+## Finding Accounts
+
+### Get Lending Market Authority PDA
+
+```typescript
+const [lendingMarketAuthority, bump] = PublicKey.findProgramAddressSync(
+  [Buffer.from('lma'), lendingMarket.toBuffer()],
+  KLEND_PROGRAM_ID
+);
+```
+
+```rust
+use kamino_lending::utils::seeds;
+
+let (lending_market_authority, bump) = Pubkey::find_program_address(
+    &[seeds::LENDING_MARKET_AUTH, lending_market.as_ref()],
+    &kamino_lending::ID,
+);
+```
+
+## Error Handling
+
+Common errors you should handle:
+
+```rust
+use kamino_lending::LendingError;
+
+match result {
+    Err(e) if e == LendingError::InvalidObligationOwner.into() => {
+        msg!("User is not the obligation owner");
+    }
+    Err(e) if e == LendingError::ObligationHealthy.into() => {
+        msg!("Cannot liquidate a healthy obligation");
+    }
+    Err(e) if e == LendingError::InsufficientLiquidity.into() => {
+        msg!("Not enough liquidity in reserve");
+    }
+    _ => {}
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deposit & Withdraw" icon="arrow-right-arrow-left" href="/integration/deposit-withdraw">
+    Learn how to deposit liquidity and withdraw collateral
+  </Card>
+  <Card title="Borrow & Repay" icon="hand-holding-dollar" href="/integration/borrow-repay">
+    Understand borrowing mechanics and repayment
+  </Card>
+  <Card title="Liquidations" icon="gavel" href="/integration/liquidations">
+    Implement liquidation bot logic
+  </Card>
+</CardGroup>

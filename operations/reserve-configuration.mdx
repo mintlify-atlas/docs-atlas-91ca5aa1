@@ -1,0 +1,514 @@
+---
+title: 'Reserve Configuration'
+description: 'Initialize and configure lending reserves in Kamino Lending'
+---
+
+## Overview
+
+Reserves represent individual token markets within a lending market. Each reserve has its own liquidity pool, interest rate model, and risk parameters. This guide covers reserve initialization and configuration.
+
+## Initializing a Reserve
+
+Use the `init_reserve` instruction to create a new reserve for a token.
+
+### Accounts Required
+
+Key accounts from `handler_init_reserve.rs:116-184`:
+
+```rust
+pub struct InitReserve<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    pub lending_market_authority: AccountInfo<'info>,
+    
+    #[account(zero)]
+    pub reserve: AccountLoader<'info, Reserve>,
+    
+    pub reserve_liquidity_mint: InterfaceAccount<'info, Mint>,
+    pub reserve_liquidity_supply: AccountInfo<'info>, // PDA
+    pub fee_receiver: AccountInfo<'info>, // PDA
+    
+    #[account(init)] // Created by instruction
+    pub reserve_collateral_mint: InterfaceAccount<'info, Mint>,
+    
+    #[account(init)]
+    pub reserve_collateral_supply: InterfaceAccount<'info, TokenAccount>,
+    
+    #[account(mut)]
+    pub initial_liquidity_source: InterfaceAccount<'info, TokenAccount>,
+    
+    // Programs and sysvars
+    pub rent: Sysvar<'info, Rent>,
+    pub liquidity_token_program: Interface<'info, TokenInterface>,
+    pub collateral_token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+```
+
+### Initial Deposit Requirement
+
+Reserves require an initial deposit to prevent price manipulation:
+
+```rust
+let min_initial_deposit_amount = market.min_initial_deposit_amount; // Default: 1000 base units
+```
+
+The signer must provide this initial liquidity from `initial_liquidity_source`. This liquidity is locked forever to maintain the exchange rate.
+
+See `handler_init_reserve.rs:72-76` and `handler_init_reserve.rs:102-110`.
+
+### Initial Configuration
+
+New reserves start with minimal configuration:
+
+```rust
+ReserveConfig {
+    status: ReserveStatus::Hidden, // Not visible to users
+    ..Default::default()
+}
+```
+
+All other parameters (LTV, borrow limits, fees, etc.) default to zero and must be configured before activation.
+
+See `handler_init_reserve.rs:95-98`.
+
+## Reserve Configuration Structure
+
+The `ReserveConfig` struct contains all configurable parameters. From `state/reserve.rs:1313-1426`:
+
+```rust
+pub struct ReserveConfig {
+    // Status
+    pub status: u8, // Active, Obsolete, or Hidden
+    
+    // Interest rates
+    pub host_fixed_interest_rate_bps: u16,
+    pub borrow_rate_curve: BorrowRateCurve,
+    
+    // Risk parameters
+    pub loan_to_value_pct: u8,
+    pub liquidation_threshold_pct: u8,
+    pub min_liquidation_bonus_bps: u16,
+    pub max_liquidation_bonus_bps: u16,
+    pub bad_debt_liquidation_bonus_bps: u16,
+    
+    // Fees
+    pub protocol_take_rate_pct: u8,
+    pub protocol_liquidation_fee_pct: u8,
+    pub fees: ReserveFees,
+    
+    // Limits
+    pub deposit_limit: u64,
+    pub borrow_limit: u64,
+    pub borrow_factor_pct: u64,
+    pub borrow_limit_outside_elevation_group: u64,
+    pub borrow_limit_against_this_collateral_in_elevation_group: [u64; 32],
+    
+    // Withdrawal caps
+    pub deposit_withdrawal_cap: WithdrawalCaps,
+    pub debt_withdrawal_cap: WithdrawalCaps,
+    
+    // Token info and oracles
+    pub token_info: TokenInfo,
+    
+    // Deleveraging
+    pub deleveraging_margin_call_period_secs: u64,
+    pub deleveraging_threshold_decrease_bps_per_day: u64,
+    pub deleveraging_bonus_increase_bps_per_day: u64,
+    pub min_deleveraging_bonus_bps: u16,
+    pub autodeleverage_enabled: u8,
+    
+    // Elevation groups
+    pub elevation_groups: [u8; 20],
+    pub disable_usage_as_coll_outside_emode: u8,
+    
+    // Advanced features
+    pub utilization_limit_block_borrowing_above_pct: u8,
+    pub block_ctoken_usage: u8,
+    pub proposer_authority_locked: u8,
+    pub protocol_order_execution_fee_pct: u8,
+    
+    // Debt maturity
+    pub debt_maturity_timestamp: u64,
+    pub debt_term_seconds: u64,
+}
+```
+
+## Updating Reserve Configuration
+
+Use the `update_reserve_config` instruction to modify reserve parameters.
+
+### Update Modes
+
+The `UpdateConfigMode` enum defines all updatable parameters. From `state/mod.rs:97-153`:
+
+```rust
+pub enum UpdateConfigMode {
+    UpdateLoanToValuePct = 1,
+    UpdateMaxLiquidationBonusBps = 2,
+    UpdateLiquidationThresholdPct = 3,
+    UpdateProtocolLiquidationFee = 4,
+    UpdateProtocolTakeRate = 5,
+    UpdateFeesOriginationFee = 6,
+    UpdateFeesFlashLoanFee = 7,
+    UpdateDepositLimit = 9,
+    UpdateBorrowLimit = 10,
+    UpdateBorrowRateCurve = 24,
+    UpdateBorrowFactor = 33,
+    UpdateElevationGroup = 35,
+    UpdateReserveStatus = 39,
+    // ... and many more
+}
+```
+
+### Common Configuration Updates
+
+#### Risk Parameters
+
+**Loan-to-Value (LTV)** - Maximum borrow power:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateLoanToValuePct,
+    encodeU8(75), // 75%
+    false // don't skip validation
+  )
+  .accounts({ reserve: reservePubkey })
+  .rpc();
+```
+
+**Liquidation Threshold** - LTV at which liquidation becomes possible:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateLiquidationThresholdPct,
+    encodeU8(80), // 80%
+    false
+  )
+  .rpc();
+```
+
+<Note>
+Liquidation threshold must be greater than LTV to provide a safety buffer.
+</Note>
+
+**Liquidation Bonuses** - Liquidator incentives:
+
+```typescript
+// Min bonus (for large, liquid positions)
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateMinLiquidationBonusBps,
+    encodeU16(250), // 2.5%
+    false
+  )
+  .rpc();
+
+// Max bonus (for small, illiquid positions)
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateMaxLiquidationBonusBps,
+    encodeU16(500), // 5%
+    false
+  )
+  .rpc();
+
+// Bad debt bonus (for insolvent positions)
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateBadDebtLiquidationBonusBps,
+    encodeU16(1000), // 10%
+    false
+  )
+  .rpc();
+```
+
+#### Borrow Rate Curve
+
+Define the interest rate model:
+
+```typescript
+const borrowRateCurve = {
+  points: [
+    {
+      utilization_rate_bps: 0,      // 0% utilization
+      borrow_rate_bps: 0,           // 0% APR
+    },
+    {
+      utilization_rate_bps: 7000,   // 70% utilization  
+      borrow_rate_bps: 500,         // 5% APR
+    },
+    {
+      utilization_rate_bps: 9000,   // 90% utilization
+      borrow_rate_bps: 2000,        // 20% APR
+    },
+    {
+      utilization_rate_bps: 10000,  // 100% utilization
+      borrow_rate_bps: 5000,        // 50% APR
+    },
+  ],
+};
+
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateBorrowRateCurve,
+    encodeBorrowRateCurve(borrowRateCurve),
+    false
+  )
+  .rpc();
+```
+
+The curve is linearly interpolated between points. See `utils/borrow_rate_curve.rs` for implementation.
+
+#### Deposit and Borrow Limits
+
+**Deposit Limit** - Maximum total deposits:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateDepositLimit,
+    encodeU64(1_000_000_000_000), // 1M tokens (with 6 decimals)
+    false
+  )
+  .rpc();
+```
+
+**Borrow Limit** - Maximum total borrows:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateBorrowLimit,
+    encodeU64(500_000_000_000), // 500K tokens
+    false
+  )
+  .rpc();
+```
+
+Setting both limits to 0 blocks all usage (see `state/reserve.rs:755-757`).
+
+**Borrow Factor** - Multiplier applied to borrowed value for risk calculations:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateBorrowFactor,
+    encodeU64(120), // 120% - borrows count as 1.2x their value
+    false
+  )
+  .rpc();
+```
+
+Borrow factor ≥ 100%. Higher values make borrowing more expensive in terms of collateral requirements.
+
+#### Fees
+
+**Origination Fee** - Fee charged on borrows:
+
+```typescript
+// 0.1% origination fee
+const originationFee = new Fraction(1, 1000); // 0.001
+
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateFeesOriginationFee,
+    encodeFraction(originationFee),
+    false
+  )
+  .rpc();
+```
+
+**Flash Loan Fee** - Fee charged on flash loans:
+
+```typescript
+// 0.01% flash loan fee  
+const flashLoanFee = new Fraction(1, 10000);
+
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateFeesFlashLoanFee,
+    encodeFraction(flashLoanFee),
+    false
+  )
+  .rpc();
+```
+
+Set to `u64::MAX` to disable flash loans.
+
+**Protocol Take Rate** - Percentage of interest going to protocol:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateProtocolTakeRate,
+    encodeU8(10), // 10% of interest
+    false
+  )
+  .rpc();
+```
+
+**Protocol Liquidation Fee** - Protocol's share of liquidation bonus:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateProtocolLiquidationFee,
+    encodeU8(5), // 5% of liquidation bonus
+    false
+  )
+  .rpc();
+```
+
+#### Withdrawal Caps
+
+Limit withdrawal rate to prevent bank runs:
+
+```typescript
+// Limit deposits/withdrawals to 100K tokens per hour
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateDepositWithdrawalCap,
+    encodeWithdrawalCap(
+      100_000_000_000,  // capacity: 100K tokens
+      3600              // interval: 1 hour (in seconds)
+    ),
+    false
+  )
+  .rpc();
+
+// Limit debt repayment/borrowing to 50K tokens per hour  
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateDebtWithdrawalCap,
+    encodeWithdrawalCap(50_000_000_000, 3600),
+    false
+  )
+  .rpc();
+```
+
+#### Reserve Status
+
+Control reserve visibility and usage:
+
+```typescript
+enum ReserveStatus {
+  Active = 0,   // Fully operational
+  Obsolete = 1, // Deprecated, users should withdraw
+  Hidden = 2,   // Not visible in UI, but functional
+}
+
+await program.methods
+  .updateReserveConfig(
+    UpdateConfigMode.UpdateReserveStatus,
+    encodeU8(ReserveStatus.Active),
+    false
+  )
+  .rpc();
+```
+
+## Authorization
+
+Reserve configuration updates require one of:
+
+1. **Market owner** - Full control over all parameters
+2. **Reserve proposer authority** - Limited permissions (if not locked)
+3. **Global admin** - Can update specific parameters even in immutable markets
+
+See `handler_update_reserve_config.rs:76-90` for authorization logic.
+
+## Configuration Validation
+
+By default, all configuration updates are validated for safety (see `handler_update_reserve_config.rs:48-61`):
+
+- LTV < liquidation threshold
+- Liquidation bonus within reasonable bounds  
+- Borrow rate curve is monotonic
+- Oracle configuration is valid
+- Elevation group membership is consistent
+
+Validation can be skipped for emergency situations, but only if the reserve is unused and blocked:
+
+```typescript
+await program.methods
+  .updateReserveConfig(
+    mode,
+    value,
+    true // skip validation - DANGEROUS!
+  )
+  .rpc();
+```
+
+<Warning>
+Skipping validation can create invalid states. Only use when absolutely necessary and the reserve is completely unused.
+</Warning>
+
+## Activating a Reserve
+
+After initialization and configuration:
+
+1. Configure all risk parameters (LTV, liquidation thresholds)
+2. Set borrow rate curve
+3. Configure fees and limits
+4. Set oracle feeds via token info
+5. Change status from Hidden to Active
+6. Optionally seed initial liquidity
+
+## Best Practices
+
+### Risk Management
+
+1. **Conservative Start**: Begin with low LTV (50-60%) and high liquidation bonuses
+2. **Gradual Increases**: Increase LTV and limits slowly based on market performance
+3. **Safety Buffers**: Maintain 5-10% gap between LTV and liquidation threshold
+4. **Stress Test**: Test extreme market conditions before going live
+
+### Interest Rates
+
+1. **Target Utilization**: Design curves for 70-80% target utilization
+2. **Steep at High Usage**: Rapidly increase rates above 90% utilization
+3. **Market-Based**: Research competitor rates and DeFi lending norms
+4. **Monitor**: Adjust based on actual utilization patterns
+
+### Limits and Caps
+
+1. **Initial Conservatism**: Start with lower limits for new/volatile tokens
+2. **Liquidity-Based**: Scale limits to token's on-chain liquidity
+3. **Withdrawal Caps**: Use for volatile tokens to prevent rapid exits
+4. **Regular Review**: Update limits as market conditions change
+
+### Oracle Configuration
+
+1. **Multiple Sources**: Use multiple oracle feeds when possible
+2. **Staleness Checks**: Set appropriate max age for price updates
+3. **TWAP**: Enable TWAP for manipulation resistance
+4. **Test Thoroughly**: Verify price feeds before activation
+
+### Elevation Groups
+
+1. **Isolated Risk**: Use for high-risk assets or leverage strategies
+2. **Clear Debt Asset**: Ensure debt asset is stable and liquid
+3. **Conservative Params**: Lower LTVs for elevation group assets
+4. **Collateral Limits**: Restrict max collateral types to manage complexity
+
+## Monitoring Configuration
+
+Regularly review:
+
+- Utilization rates vs target
+- Liquidation frequency and bonuses
+- Protocol fee collection
+- Limit hits (deposit/borrow caps)
+- Oracle price staleness
+- Withdrawal cap usage
+
+See [Monitoring](/operations/monitoring) for detailed metrics.
+
+## Related Instructions
+
+- [Market Management](/operations/market-management) - Configure the parent lending market
+- [Monitoring](/operations/monitoring) - Track reserve health and usage

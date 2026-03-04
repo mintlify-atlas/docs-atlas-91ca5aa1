@@ -1,97 +1,271 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: Kamino Lending Documentation
+mode: custom
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#0f1117] via-[#1a1d27] to-[#0f1117] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#0f1117] py-20">
+  <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGRlZnM+PHBhdHRlcm4gaWQ9ImdyaWQiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHBhdGggZD0iTSAxMCAwIEwgMCAwIDAgMTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0icmdiYSg1OSwgMTMwLCAyNDYsIDAuMSkiIHN0cm9rZS13aWR0aD0iMSIvPjwvcGF0dGVybj48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0idXJsKCNncmlkKSIvPjwvc3ZnPg==')] opacity-40"></div>
+  
+  <div className="relative max-w-6xl mx-auto px-6 sm:px-8">
+    <div className="text-center">
+      <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold text-white mb-6">
+        Kamino Lending Protocol
+      </h1>
+      <p className="text-xl sm:text-2xl text-gray-300 max-w-3xl mx-auto mb-10">
+        Open source lending protocol for the Solana blockchain. Build lending and borrowing features with decentralized, capital-efficient smart contracts.
+      </p>
+      <div className="flex flex-wrap gap-4 justify-center">
+        <a 
+          href="/quickstart" 
+          className="inline-flex items-center px-8 py-3.5 text-base font-semibold text-white bg-[#3B82F6] hover:bg-[#2563EB] rounded-lg transition-colors no-underline"
+        >
+          Get Started
+          <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
+        </a>
+        <a 
+          href="/reference/instructions/overview" 
+          className="inline-flex items-center px-8 py-3.5 text-base font-semibold text-white border border-white/30 bg-white/10 hover:bg-white/20 rounded-lg transition-colors no-underline"
+        >
+          Program Reference
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Quick Start</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Get up and running with Kamino Lending in minutes
+    </p>
+  </div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+  <Steps>
+    <Step title="Review the architecture">
+      Understand how Kamino Lending works with lending markets, reserves, and obligations.
+      
+      ```rust
+      // Program ID: KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD (Mainnet & Devnet)
+      // Staging:    SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh (Mainnet)
+      ```
+      
+      <Accordion title="Deployed Program IDs">
+        - **Mainnet**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+        - **Staging (Mainnet)**: `SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh`
+        - **Devnet**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+      </Accordion>
+    </Step>
 
-## Make it yours
+    <Step title="Set up your environment">
+      Install the necessary dependencies to interact with the Kamino Lending program.
+      
+      ```bash
+      # Add the Anchor dependency
+      anchor-lang = "0.29.0"
+      anchor-spl = "0.29.0"
+      ```
+      
+      Learn more in the [Integration Setup](/integration/setup) guide.
+    </Step>
 
-Design a docs site that looks great and empowers your users.
+    <Step title="Make your first deposit">
+      Deposit liquidity into a reserve to start earning interest or use as collateral.
+      
+      ```rust
+      pub fn deposit_reserve_liquidity(
+          ctx: Context<DepositReserveLiquidity>,
+          liquidity_amount: u64,
+      ) -> Result<()>
+      ```
+      
+      Follow the [Deposit & Withdraw](/integration/deposit-withdraw) guide for complete examples.
+    </Step>
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
+    <Step title="Explore advanced features">
+      Leverage flash loans, referral rewards, elevation groups, and auto-deleveraging for sophisticated DeFi applications.
+      
+      Check out [Advanced Features](/advanced/flash-loans) to learn more.
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Core Concepts</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Master the fundamental building blocks of Kamino Lending
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
     <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+      title="Architecture"
+      icon="sitemap"
+      href="/concepts/architecture"
+    >
+      Learn how lending markets, reserves, and obligations work together in the protocol.
+    </Card>
+    <Card
+      title="Reserves"
+      icon="database"
+      href="/concepts/reserves"
+    >
+      Understand reserve configuration, liquidity management, and interest rate models.
+    </Card>
+    <Card
+      title="Obligations"
+      icon="file-contract"
+      href="/concepts/obligations"
+    >
+      Explore how user positions track collateral deposits and borrowed assets.
+    </Card>
+    <Card
+      title="Collateral & Liquidity"
+      icon="coins"
+      href="/concepts/collateral-and-liquidity"
+    >
+      Discover how collateral ratios, liquidation thresholds, and borrow limits are calculated.
+    </Card>
+  </CardGroup>
+</div>
 
-## Create beautiful pages
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Integration Guides</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Step-by-step guides to integrate Kamino Lending into your application
+    </p>
+  </div>
 
-Everything you need to create world-class documentation.
+  <CardGroup cols={2}>
+    <Card
+      title="Setup"
+      icon="wrench"
+      href="/integration/setup"
+    >
+      Configure your project and connect to the Kamino Lending program.
+    </Card>
+    <Card
+      title="Deposit & Withdraw"
+      icon="arrow-right-arrow-left"
+      href="/integration/deposit-withdraw"
+    >
+      Enable users to supply and withdraw liquidity from reserves.
+    </Card>
+    <Card
+      title="Borrow & Repay"
+      icon="hand-holding-dollar"
+      href="/integration/borrow-repay"
+    >
+      Implement borrowing against collateral and loan repayment flows.
+    </Card>
+    <Card
+      title="Liquidations"
+      icon="gavel"
+      href="/integration/liquidations"
+    >
+      Build liquidation bots to maintain protocol health and earn rewards.
+    </Card>
+  </CardGroup>
+</div>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Advanced Features</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Unlock powerful DeFi capabilities for sophisticated use cases
+    </p>
+  </div>
 
-## Need inspiration?
+  <CardGroup cols={2}>
+    <Card
+      title="Flash Loans"
+      icon="bolt"
+      href="/advanced/flash-loans"
+    >
+      Execute uncollateralized loans within a single transaction for arbitrage and more.
+    </Card>
+    <Card
+      title="Referral System"
+      icon="users"
+      href="/advanced/referral-system"
+    >
+      Earn referral fees by bringing users and liquidity to the protocol.
+    </Card>
+    <Card
+      title="Elevation Groups"
+      icon="layer-group"
+      href="/advanced/elevation-groups"
+    >
+      Use risk tiers to create isolated lending pools with custom parameters.
+    </Card>
+    <Card
+      title="Auto-Deleveraging"
+      icon="shield-halved"
+      href="/advanced/autodeleverage"
+    >
+      Learn how the protocol automatically manages risky positions during volatility.
+    </Card>
+  </CardGroup>
+</div>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gradient-to-br from-[#3B82F6] to-[#2563EB] rounded-2xl p-10 text-center">
+    <h2 className="text-3xl font-bold text-white mb-4">Ready to build?</h2>
+    <p className="text-xl text-white/90 max-w-2xl mx-auto mb-8">
+      Explore the complete program reference with detailed instruction documentation, account structures, and error codes.
+    </p>
+    <a 
+      href="/reference/instructions/overview" 
+      className="inline-flex items-center px-8 py-3.5 text-base font-semibold text-[#3B82F6] bg-white hover:bg-gray-100 rounded-lg transition-colors no-underline"
+    >
+      View Program Reference
+      <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+      </svg>
+    </a>
+  </div>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">Resources</h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Connect with the community and access additional resources
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card
+      title="GitHub Repository"
+      icon="github"
+      href="https://github.com/kamino-finance/klend"
+    >
+      View the source code, report issues, and contribute to the protocol.
+    </Card>
+    <Card
+      title="Kamino Finance"
+      icon="globe"
+      href="https://kamino.finance"
+    >
+      Visit the official Kamino Finance website to learn more about the platform.
+    </Card>
+    <Card
+      title="Security"
+      icon="lock"
+      href="https://github.com/Kamino-Finance/audits/blob/master/docs/SECURITY.md"
+    >
+      Review our security policy and audits by OtterSec, Offside Labs, Certora, and Sec3.
+    </Card>
+    <Card
+      title="Contact Security Team"
+      icon="envelope"
+      href="mailto:security@kamino.finance"
+    >
+      Report security vulnerabilities directly to our team.
+    </Card>
+  </CardGroup>
+</div>

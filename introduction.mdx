@@ -1,0 +1,138 @@
+---
+title: Introduction
+description: Learn about Kamino Lending, an open source lending protocol for Solana
+---
+
+# Introduction to Kamino Lending
+
+Kamino Lending (KLend) is an open source lending protocol smart contract built for the Solana blockchain. It enables decentralized lending and borrowing of digital assets with advanced features for risk management and capital efficiency.
+
+## What is Kamino Lending?
+
+Kamino Lending provides a permissionless platform where users can:
+
+- **Supply liquidity** to earn interest on deposited assets
+- **Borrow assets** against collateral with dynamic interest rates
+- **Execute flash loans** for arbitrage and liquidations
+- **Participate in liquidations** to maintain protocol solvency
+- **Earn referral rewards** through the integrated referral system
+
+The protocol is designed with institutional-grade risk controls and supports complex lending market configurations.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Multiple reserves" icon="layer-group">
+    Support for numerous token reserves within a single lending market, each with independent configurations
+  </Card>
+  
+  <Card title="Flash loans" icon="bolt">
+    Uncollateralized loans that must be repaid within the same transaction, enabling advanced DeFi strategies
+  </Card>
+  
+  <Card title="Liquidation system" icon="shield-halved">
+    Automated liquidation mechanism to protect lenders when borrowers become undercollateralized
+  </Card>
+  
+  <Card title="Elevation groups" icon="layer-group">
+    Advanced risk isolation feature allowing up to 32 elevation groups for segregated borrowing pools
+  </Card>
+  
+  <Card title="Referral system" icon="handshake">
+    Built-in referral tracking and fee distribution for protocol integrators
+  </Card>
+  
+  <Card title="Borrow orders" icon="list-check">
+    Automated order execution system for conditional borrowing and lending operations
+  </Card>
+</CardGroup>
+
+## Deployments
+
+Kamino Lending is deployed using the following program IDs:
+
+<CodeGroup>
+```text Mainnet
+KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD
+```
+
+```text Staging (Mainnet)
+SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh
+```
+
+```text Devnet
+KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD
+```
+</CodeGroup>
+
+<Note>
+The staging deployment on mainnet uses the `staging` feature flag during compilation, which sets a different program ID for testing purposes.
+</Note>
+
+## Core concepts
+
+### Lending markets
+
+A **lending market** is the top-level account that governs a collection of reserves. Each market has:
+
+- A market owner who controls configuration
+- Emergency controls for risk management
+- Global borrow limits and risk parameters
+- Elevation group configurations
+- Referral fee settings
+
+Refer to `src/state/lending_market.rs:29` for the complete data structure.
+
+### Reserves
+
+A **reserve** represents a single asset pool within a lending market. Each reserve manages:
+
+- **Liquidity**: The underlying tokens available for borrowing
+- **Collateral**: Interest-bearing cTokens minted to depositors
+- **Configuration**: Interest rate curves, LTV ratios, fees, and limits
+- **Farms**: Optional reward programs for depositors and borrowers
+
+Reserves track available liquidity, borrowed amounts, and accrued interest. See `src/state/reserve.rs:61` for implementation details.
+
+### Obligations
+
+An **obligation** represents a user's position across the lending market. Each obligation tracks:
+
+- Up to 8 collateral deposits from different reserves
+- Up to 5 borrows from different reserves
+- Health metrics (LTV, borrow value, collateral value)
+- Referrer attribution
+- Elevation group membership
+
+Obligations must maintain healthy collateralization ratios to avoid liquidation. View the structure at `src/state/obligation.rs:28`.
+
+## Architecture
+
+The protocol is built using the Anchor framework (v0.29.0) and follows these design principles:
+
+- **Zero-copy deserialization** for large account structures
+- **Fixed-point math** for precise interest calculations
+- **Oracle integration** with Pyth and Scope for price feeds
+- **CPI-based interactions** with farms and other protocols
+
+<Info>
+The program is licensed under BUSL-1.1 and has been audited by OtterSec, Offside Labs, Certora, and Sec3.
+</Info>
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first integration with Kamino Lending
+  </Card>
+  
+  <Card title="Program Reference" icon="code" href="/reference/instructions/overview">
+    Explore all program instructions and account structures
+  </Card>
+</CardGroup>
+
+## Additional resources
+
+- [GitHub Repository](https://github.com/Kamino-Finance/klend)
+- [Security Policy](https://github.com/Kamino-Finance/audits/blob/master/docs/SECURITY.md)
+- [Kamino Finance](https://kamino.finance/)

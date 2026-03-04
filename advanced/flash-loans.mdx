@@ -1,0 +1,284 @@
+---
+title: "Flash Loans"
+description: "Execute uncollateralized loans within a single transaction on Kamino Lending"
+---
+
+## Overview
+
+Flash loans allow you to borrow liquidity from Kamino Lending reserves without collateral, provided you repay the loan plus fees within the same transaction. This enables atomic arbitrage, liquidations, collateral swaps, and other advanced DeFi strategies.
+
+## How Flash Loans Work
+
+### Atomicity Requirement
+
+Flash loans must be borrowed and repaid in the same Solana transaction. The protocol validates that:
+- A `flash_repay_reserve_liquidity` instruction follows the `flash_borrow_reserve_liquidity` instruction
+- Both instructions reference the same reserve
+- The repay amount matches the borrow amount
+- All accounts match between borrow and repay instructions
+
+See the validation logic in `lending_market/flash_ixs.rs:18-187`.
+
+### Instructions
+
+#### 1. Flash Borrow Reserve Liquidity
+
+**Handler**: `handler_flash_borrow_reserve_liquidity.rs:12`
+
+Borrows liquidity from a reserve without collateral.
+
+```rust
+pub fn flash_borrow_reserve_liquidity(
+    ctx: Context<FlashBorrowReserveLiquidity>,
+    liquidity_amount: u64,
+) -> Result<()>
+```
+
+**Parameters**:
+- `liquidity_amount`: Amount to borrow (in token's smallest unit)
+
+**Checks**:
+- Flash loans must not be called via CPI (`flash_ixs.rs:92`)
+- A matching repay instruction must exist in the same transaction (`flash_ixs.rs:138`)
+- Reserve flash loan feature is enabled (not `u64::MAX`) (`lending_operations.rs:1740`)
+- Reserve has sufficient available liquidity
+
+#### 2. Flash Repay Reserve Liquidity
+
+**Handler**: `handler_flash_repay_reserve_liquidity.rs:12`
+
+Repays the borrowed liquidity plus fees.
+
+```rust
+pub fn flash_repay_reserve_liquidity(
+    ctx: Context<FlashRepayReserveLiquidity>,
+    liquidity_amount: u64,
+    borrow_instruction_index: u8,
+) -> Result<()>
+```
+
+**Parameters**:
+- `liquidity_amount`: Amount to repay (must match borrow amount)
+- `borrow_instruction_index`: Index of the flash borrow instruction in the transaction
+
+**Validation** (`flash_ixs.rs:27`):
+- Borrow instruction index must be less than current instruction index
+- Referenced instruction must be a valid `flash_borrow_reserve_liquidity`
+- Liquidity amounts must match
+- All accounts must match between borrow and repay
+
+## Fee Calculation
+
+Flash loan fees are calculated in `state/reserve.rs:1712`:
+
+```rust
+pub fn calculate_flash_loan_fees(
+    &self,
+    flash_loan_amount_f: Fraction,
+    referral_fee_bps: u16,
+    has_referrer: bool,
+) -> Result<(u64, u64)>
+```
+
+**Fee Structure**:
+- **Protocol Fee**: Determined by `reserve.config.fees.flash_loan_fee_sf`
+- **Referral Fee**: If a referrer is provided, a portion of the protocol fee goes to the referrer based on `referral_fee_bps`
+
+**Total Repayment** (`lending_operations.rs:1805`):
+```rust
+let flash_loan_amount_with_referral_fee = flash_loan_amount + referrer_fee;
+```
+
+You must transfer:
+1. `flash_loan_amount_with_referral_fee` to the reserve supply vault
+2. `protocol_fee` to the reserve fee vault
+
+## Complete Flash Loan Example
+
+### Arbitrage Example
+
+This example borrows USDC, executes an arbitrage trade, and repays the loan:
+
+```typescript
+import { Transaction, PublicKey } from '@solana/web3.js';
+import { createFlashBorrowInstruction, createFlashRepayInstruction } from './kamino-sdk';
+
+const executeFlashLoanArbitrage = async () => {
+  const tx = new Transaction();
+  const flashLoanAmount = 10_000_000_000; // 10,000 USDC (6 decimals)
+  
+  // Step 1: Flash borrow
+  const flashBorrowIx = createFlashBorrowInstruction({
+    userTransferAuthority: wallet.publicKey,
+    lendingMarket,
+    reserve: usdcReserve,
+    reserveLiquidityMint: usdcMint,
+    reserveSourceLiquidity: reserveSupplyVault,
+    userDestinationLiquidity: userUsdcAccount,
+    reserveLiquidityFeeReceiver: feeVault,
+    referrerTokenState: null, // Optional
+    referrerAccount: null,
+    liquidity_amount: flashLoanAmount,
+  });
+  tx.add(flashBorrowIx);
+  
+  // Step 2: Your arbitrage logic (swap on DEX, etc.)
+  const arbitrageIx = await createArbitrageSwap(
+    userUsdcAccount,
+    flashLoanAmount
+  );
+  tx.add(arbitrageIx);
+  
+  // Step 3: Flash repay
+  const borrowInstructionIndex = 0; // Flash borrow is first instruction
+  const flashRepayIx = createFlashRepayInstruction({
+    userTransferAuthority: wallet.publicKey,
+    lendingMarket,
+    reserve: usdcReserve,
+    reserveLiquidityMint: usdcMint,
+    reserveDestinationLiquidity: reserveSupplyVault,
+    userSourceLiquidity: userUsdcAccount,
+    reserveLiquidityFeeReceiver: feeVault,
+    referrerTokenState: null,
+    referrerAccount: null,
+    liquidity_amount: flashLoanAmount,
+    borrow_instruction_index: borrowInstructionIndex,
+  });
+  tx.add(flashRepayIx);
+  
+  // Send transaction
+  const signature = await connection.sendTransaction(tx, [wallet]);
+  await connection.confirmTransaction(signature);
+};
+```
+
+### Liquidation with Flash Loan
+
+Borrow assets to perform a liquidation without holding the debt asset:
+
+```typescript
+const flashLiquidation = async (
+  obligationToLiquidate: PublicKey,
+  repayReserve: PublicKey,
+  withdrawReserve: PublicKey
+) => {
+  const tx = new Transaction();
+  const flashBorrowAmount = 5_000_000_000; // 5,000 tokens
+  
+  // 1. Flash borrow repay asset
+  tx.add(createFlashBorrowInstruction({
+    reserve: repayReserve,
+    liquidity_amount: flashBorrowAmount,
+    // ... other params
+  }));
+  
+  // 2. Liquidate obligation
+  tx.add(createLiquidateObligationInstruction({
+    obligation: obligationToLiquidate,
+    repayReserve,
+    withdrawReserve,
+    liquidityAmount: flashBorrowAmount,
+    // ... other params
+  }));
+  
+  // 3. Sell collateral received from liquidation
+  tx.add(createSwapInstruction({
+    // Swap withdrawn collateral for repay asset
+    // Must generate enough to repay flash loan + fees
+  }));
+  
+  // 4. Flash repay
+  tx.add(createFlashRepayInstruction({
+    reserve: repayReserve,
+    liquidity_amount: flashBorrowAmount,
+    borrow_instruction_index: 0,
+    // ... other params
+  }));
+  
+  await connection.sendTransaction(tx, [wallet]);
+};
+```
+
+## Error Handling
+
+### Common Errors
+
+**FlashLoansDisabled** (`lending_operations.rs:1742`):
+```rust
+if reserve.config.fees.flash_loan_fee_sf == u64::MAX {
+    msg!("Flash loans are disabled for this reserve");
+    return err!(LendingError::FlashLoansDisabled);
+}
+```
+Flash loans are disabled when fee is set to `u64::MAX`.
+
+**InvalidFlashRepay** (`flash_ixs.rs:50`):
+Occurs when:
+- Borrow instruction index is invalid
+- Liquidity amounts don't match
+- Reserve accounts don't match
+- Accounts mismatch between borrow and repay
+
+**NoFlashRepayFound** (`flash_ixs.rs:139`):
+```rust
+if !found_repay_ix {
+    msg!("No flash repay found");
+    return err!(LendingError::NoFlashRepayFound);
+}
+```
+Transaction must include a flash repay instruction.
+
+**FlashBorrowCpi** / **FlashRepayCpi** (`flash_ixs.rs:94`, `flash_ixs.rs:30`):
+```rust
+if instruction_loader.is_flash_forbidden_cpi_call()? {
+    msg!("Flash Borrow was called via CPI!");
+    return err!(LendingError::FlashBorrowCpi);
+}
+```
+Flash loan instructions cannot be invoked via CPI.
+
+**MultipleFlashBorrows** (`flash_ixs.rs:123`):
+```rust
+if ixn.data[..8] == flash_borrow_discriminator {
+    msg!("Multiple flash borrows not allowed");
+    return err!(LendingError::MultipleFlashBorrows);
+}
+```
+Only one flash borrow per transaction is allowed.
+
+### Repayment Failure Handling
+
+If repayment fails, the entire transaction reverts atomically. Common failure scenarios:
+
+1. **Insufficient funds**: User account doesn't have enough tokens to repay
+2. **Fee calculation error**: Slippage causes insufficient tokens after intermediate operations
+3. **Token account issues**: Invalid or frozen token accounts
+
+**Best Practice**: Always calculate fees beforehand and ensure operations generate sufficient funds:
+
+```typescript
+// Calculate required repayment
+const protocolFee = Math.ceil(flashLoanAmount * flashLoanFeeRate);
+const referralFee = hasReferrer 
+  ? Math.floor(protocolFee * (referralFeeBps / 10000))
+  : 0;
+const totalRepayment = flashLoanAmount + referralFee + protocolFee;
+
+// Ensure your operations generate >= totalRepayment
+```
+
+## Security Considerations
+
+1. **CPI Protection**: Flash loans cannot be called via CPI to prevent reentrancy attacks
+2. **Single Use**: Only one flash borrow per transaction to prevent complex attack vectors
+3. **Atomic Execution**: All operations are atomic - if repayment fails, the borrow is reverted
+4. **Account Matching**: Strict validation ensures the same accounts are used for borrow and repay
+5. **Fee Enforcement**: Fees are always collected, making unprofitable attacks expensive
+
+## Tips for Success
+
+- **Test thoroughly**: Simulate transactions on devnet before mainnet deployment
+- **Account for slippage**: Add buffer to ensure repayment amount after intermediate swaps
+- **Monitor liquidity**: Check reserve available liquidity before attempting large flash loans
+- **Optimize compute**: Flash loan transactions can be complex - optimize compute budget
+- **Handle referrals**: Pass referrer accounts to reduce fees if you have a referral relationship

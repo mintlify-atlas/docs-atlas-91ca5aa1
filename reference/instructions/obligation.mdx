@@ -1,0 +1,267 @@
+---
+title: "Obligation Instructions"
+description: "Instructions for managing user obligations (lending positions)"
+---
+
+## init_obligation
+
+Initialize a new obligation (user lending position) in a lending market.
+
+### Signature
+
+```rust
+pub fn init_obligation(
+    ctx: Context<InitObligation>,
+    args: InitObligationArgs
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="args" type="InitObligationArgs" required>
+  Initialization arguments containing:
+  - `tag: u8` - The obligation type tag (0-3)
+    - 0: Default (no seed accounts)
+    - 1: Two mint seeds
+    - 2: Single mint seed (repeated)
+    - 3: Two mint seeds (same as 1)
+  - `id: u8` - The obligation ID (must be 0 for current version)
+</ParamField>
+
+### Accounts
+
+<ParamField path="obligation_owner" type="Signer" required>
+  The owner of the obligation.
+</ParamField>
+
+<ParamField path="fee_payer" type="Signer" required>
+  The account paying for initialization.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="obligation" type="AccountLoader<Obligation>" required>
+  The obligation account to initialize.
+  - Seeds: `[[tag], [id], obligation_owner.key(), lending_market.key(), seed1_account.key(), seed2_account.key()]`
+  - Initialized by this instruction
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market this obligation belongs to.
+</ParamField>
+
+<ParamField path="seed1_account" type="AccountInfo" required>
+  First seed account (must be default pubkey for tag 0, mint for tags 1-3).
+</ParamField>
+
+<ParamField path="seed2_account" type="AccountInfo" required>
+  Second seed account (must be default pubkey for tag 0, mint for tags 1 and 3, same as seed1 for tag 2).
+</ParamField>
+
+<ParamField path="owner_user_metadata" type="AccountLoader<UserMetadata>" required>
+  The owner's user metadata account (for referrer tracking).
+  - Seeds: `["user_metadata", obligation_owner.key()]`
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidObligationSeedsValue`: Seed accounts don't match the tag requirements
+- Standard Anchor errors if account validation fails
+
+---
+
+## init_obligation_farms_for_reserve
+
+Initialize farming state for an obligation on a specific reserve.
+
+### Signature
+
+```rust
+pub fn init_obligation_farms_for_reserve(
+    ctx: Context<InitObligationFarmsForReserve>,
+    mode: u8
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="mode" type="u8" required>
+  The farm type:
+  - `0`: Collateral farming
+  - `1`: Debt farming
+</ParamField>
+
+### Accounts
+
+<ParamField path="payer" type="Signer" required>
+  The account paying for initialization.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="owner" type="AccountInfo" required>
+  The owner of the obligation.
+</ParamField>
+
+<ParamField path="obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_farm_state" type="AccountInfo" required>
+  The farm state account for the reserve.
+  - Must be mutable
+  - Must match the reserve's stored farm for the specified mode
+</ParamField>
+
+<ParamField path="obligation_farm" type="AccountInfo" required>
+  The obligation's farm account (initialized via CPI).
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `ReserveObsolete`: Reserve is marked as obsolete
+- `ReserveDeprecated`: Reserve version is outdated
+- `NoFarmForReserve`: Reserve doesn't have a farm for the specified mode
+- `InvalidAccountInput`: Farm state account doesn't match reserve's stored farm
+
+---
+
+## refresh_obligation
+
+Refresh an obligation's state, recalculating borrowed and deposited values based on current reserve states.
+
+### Signature
+
+```rust
+pub fn refresh_obligation(
+    ctx: Context<RefreshObligation>
+) -> Result<()>
+```
+
+### Parameters
+
+None.
+
+### Accounts
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="obligation" type="AccountLoader<Obligation>" required>
+  The obligation to refresh.
+  - Must be mutable
+  - Must belong to the lending market
+</ParamField>
+
+### Remaining Accounts
+
+Provide accounts in this order:
+1. All deposit reserve accounts (in order of obligation deposits)
+2. All borrow reserve accounts (in order of obligation borrows)
+3. If obligation has a referrer: referrer token state accounts for each borrow reserve
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidAccountInput`: Wrong number or order of remaining accounts
+- `GlobalEmergencyMode`: Emergency mode is enabled (via access control)
+
+---
+
+## refresh_obligation_farms_for_reserve
+
+Refresh the farming state for an obligation on a specific reserve.
+
+### Signature
+
+```rust
+pub fn refresh_obligation_farms_for_reserve(
+    ctx: Context<RefreshObligationFarmsForReserve>,
+    mode: u8
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="mode" type="u8" required>
+  The farm type:
+  - `0`: Collateral farming
+  - `1`: Debt farming
+</ParamField>
+
+### Accounts
+
+<ParamField path="crank" type="Signer" required>
+  Any account (anyone can refresh farms).
+</ParamField>
+
+<ParamField path="base_accounts.obligation" type="AccountInfo" required>
+  The obligation account.
+</ParamField>
+
+<ParamField path="base_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="base_accounts.reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+</ParamField>
+
+<ParamField path="base_accounts.reserve_farm_state" type="AccountInfo" required>
+  The farm state account for the reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="base_accounts.obligation_farm_user_state" type="AccountLoader<FarmsUserState>" required>
+  The obligation's farm user state.
+  - Must be mutable
+  - Must have `delegatee` matching the obligation
+</ParamField>
+
+<ParamField path="base_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `NoFarmForReserve`: Reserve doesn't have a farm for the specified mode
+- `InvalidAccountInput`: Farm state or obligation farm doesn't match expected values
+- `GlobalEmergencyMode`: Emergency mode is enabled (via access control)

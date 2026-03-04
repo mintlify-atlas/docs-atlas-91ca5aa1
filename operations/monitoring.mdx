@@ -1,0 +1,486 @@
+---
+title: 'Monitoring'
+description: 'Monitor and maintain Kamino Lending protocol health'
+---
+
+## Overview
+
+Effective monitoring is critical for maintaining a healthy lending protocol. This guide covers key metrics, refresh operations, oracle monitoring, and recommended tooling.
+
+## Key Metrics to Monitor
+
+### Reserve-Level Metrics
+
+#### Utilization Rate
+
+Utilization measures how much of the available liquidity is currently borrowed:
+
+```typescript
+const reserve = await program.account.reserve.fetch(reservePubkey);
+const totalSupply = reserve.liquidity.totalSupply; // Available + borrowed - fees
+const borrowed = reserve.liquidity.borrowedAmountSf;
+const utilizationRate = borrowed / totalSupply;
+```
+
+See `state/reserve.rs:977-984` for calculation.
+
+**Monitoring thresholds:**
+- **< 50%**: Low utilization, consider lowering rates
+- **50-80%**: Target range for most reserves
+- **80-95%**: High utilization, rates rising
+- **> 95%**: Critical - very little liquidity available
+
+#### Total Deposits and Borrows
+
+```typescript
+const totalDeposits = reserve.liquidity.totalAvailableAmount;
+const totalBorrowed = Fraction.fromBits(reserve.liquidity.borrowedAmountSf);
+
+console.log(`Deposits: ${totalDeposits}`);
+console.log(`Borrowed: ${totalBorrowed.toString()}`);
+```
+
+**Monitor for:**
+- Rapid deposit/withdrawal spikes
+- Approaching deposit or borrow limits
+- Unusual patterns suggesting manipulation
+
+#### Current Borrow Rate
+
+Calculate the current interest rate:
+
+```typescript
+const utilizationRate = reserve.liquidity.utilizationRate();
+const borrowRate = reserve.config.borrowRateCurve.getBorrowRate(utilizationRate);
+
+console.log(`Current APR: ${borrowRate * 100}%`);
+```
+
+See `state/reserve.rs:160-166` for implementation.
+
+**Alert if:**
+- Rates exceed expected maximum
+- Rates are 0 at high utilization (curve misconfiguration)
+- Sharp rate changes indicate potential issues
+
+#### Available Liquidity
+
+```typescript
+// Total available for borrowing/withdrawals
+const totalAvailable = reserve.liquidity.totalAvailableAmount;
+
+// Available excluding queued withdrawals
+const freelyAvailable = reserve.freelyAvailableLiquidityAmount();
+
+console.log(`Total available: ${totalAvailable}`);
+console.log(`Freely available: ${freelyAvailable}`);
+```
+
+See `state/reserve.rs:206-214` for calculation.
+
+**Alert if:**
+- Available liquidity < 5% of total supply
+- Freely available < total available (withdraw queue building up)
+- Sudden drops suggesting large withdrawals
+
+#### Protocol Fees
+
+```typescript
+const protocolFees = Fraction.fromBits(
+  reserve.liquidity.accumulatedProtocolFeesSf
+);
+const redeemableAmount = reserve.calculateRedeemFees();
+
+console.log(`Accumulated fees: ${protocolFees.toString()}`);
+console.log(`Redeemable now: ${redeemableAmount}`);
+```
+
+See `state/reserve.rs:684-689`.
+
+**Monitor:**
+- Fee accumulation rate
+- Fee collection frequency
+- Uncollected fees vs available liquidity
+
+### Obligation-Level Metrics
+
+#### Unhealthy Obligations
+
+Identify at-risk positions:
+
+```typescript
+// Fetch all obligations for a market
+const obligations = await program.account.obligation.all([
+  {
+    memcmp: {
+      offset: 8 + 8, // Skip discriminator and version
+      bytes: lendingMarket.toBase58(),
+    },
+  },
+]);
+
+// Calculate health for each
+for (const obligation of obligations) {
+  const health = calculateObligationHealth(obligation);
+  
+  if (health.ltv > health.liquidationThreshold) {
+    console.log(`Unhealthy obligation: ${obligation.publicKey}`);
+    console.log(`LTV: ${health.ltv}%, Threshold: ${health.liquidationThreshold}%`);
+  }
+}
+```
+
+**Alert thresholds:**
+- LTV > 90% of liquidation threshold (close to liquidation)
+- Any obligations exceeding liquidation threshold (liquidatable)
+- Rapid LTV increases suggesting price movements
+
+#### Total Borrowed Value
+
+```typescript
+let totalBorrowedValue = 0;
+
+for (const obligation of obligations) {
+  for (const borrow of obligation.borrows) {
+    const reserve = await program.account.reserve.fetch(borrow.borrowReserve);
+    const price = Fraction.fromBits(reserve.liquidity.marketPriceSf);
+    const amount = Fraction.fromBits(borrow.borrowedAmountSf);
+    
+    totalBorrowedValue += (amount * price).toNumber();
+  }
+}
+
+console.log(`Total borrowed: $${totalBorrowedValue}`);
+```
+
+**Monitor against:**
+- Global borrow limit in lending market
+- Historical trends and growth rate
+- Concentration in specific reserves
+
+### Market-Level Metrics
+
+#### Global Borrow Limit
+
+```typescript
+const market = await program.account.lendingMarket.fetch(marketPubkey);
+const globalLimit = market.globalAllowedBorrowValue;
+const currentBorrowed = calculateTotalBorrowedValue(); // From above
+
+const utilizationPct = (currentBorrowed / globalLimit) * 100;
+
+console.log(`Global limit utilization: ${utilizationPct}%`);
+```
+
+**Alert if:**
+- Utilization > 80% of global limit
+- Rapid increases suggesting demand surge
+
+#### Emergency Mode Status
+
+```typescript
+const isEmergency = market.emergencyMode !== 0;
+const isBorrowDisabled = market.borrowDisabled !== 0;
+
+console.log(`Emergency mode: ${isEmergency}`);
+console.log(`Borrowing disabled: ${isBorrowDisabled}`);
+```
+
+See `state/lending_market.rs:297-299`.
+
+**Immediate alerts:**
+- Emergency mode activated
+- Borrowing disabled
+
+## Refresh Operations
+
+Kamino Lending requires periodic refresh operations to update interest accrual and prices.
+
+### Refresh Reserve
+
+Update reserve interest accrual and price:
+
+```typescript
+await program.methods
+  .refreshReserve()
+  .accounts({
+    reserve: reservePubkey,
+    lendingMarket: marketPubkey,
+    pythOracle: pythPriceAccount,
+    switchboardPriceOracle: null,
+    switchboardTwapOracle: null,
+    scopePrices: scopePriceAccount,
+  })
+  .rpc();
+```
+
+See `handler_refresh_reserve.rs:11-63`.
+
+**Refresh frequency:**
+- **Minimum**: Every 1-2 hours to accrue interest
+- **Price updates**: When price age > `priceRefreshTriggerToMaxAgePct` threshold
+- **Before operations**: Automatically called before borrow/liquidate/etc.
+
+### Refresh Obligation
+
+Update obligation's collateral and debt values:
+
+```typescript
+// Collect all reserve accounts for deposits and borrows
+const depositReserves = obligation.deposits.map(d => d.depositReserve);
+const borrowReserves = obligation.borrows.map(b => b.borrowReserve);
+
+// Optional: referrer token states if obligation has referrer
+const referrerStates = obligation.hasReferrer 
+  ? obligation.borrows.map(b => getReferrerStateForReserve(b.borrowReserve))
+  : [];
+
+await program.methods
+  .refreshObligation()
+  .accounts({
+    lendingMarket: marketPubkey,
+    obligation: obligationPubkey,
+  })
+  .remainingAccounts([
+    ...depositReserves.map(pk => ({ pubkey: pk, isSigner: false, isWritable: false })),
+    ...borrowReserves.map(pk => ({ pubkey: pk, isSigner: false, isWritable: false })),
+    ...referrerStates.map(pk => ({ pubkey: pk, isSigner: false, isWritable: false })),
+  ])
+  .rpc();
+```
+
+See `handler_refresh_obligation.rs:10-68`.
+
+**Refresh frequency:**
+- After reserve price updates
+- Before liquidations
+- Before borrowing more
+- When checking position health
+
+### Batch Refresh
+
+Refresh multiple reserves in one transaction:
+
+```typescript
+await program.methods
+  .refreshReservesBatch()
+  .accounts({ lendingMarket: marketPubkey })
+  .remainingAccounts([
+    { pubkey: reserve1, isSigner: false, isWritable: true },
+    { pubkey: reserve1PriceOracle, isSigner: false, isWritable: false },
+    { pubkey: reserve2, isSigner: false, isWritable: true },
+    { pubkey: reserve2PriceOracle, isSigner: false, isWritable: false },
+    // ... more reserves
+  ])
+  .rpc();
+```
+
+**Use for:**
+- Efficient refresh of all reserves
+- Scheduled maintenance operations
+- Before market-wide analysis
+
+## Price Oracle Monitoring
+
+### Oracle Types
+
+Kamino supports multiple oracle sources:
+
+1. **Pyth Network** - High-frequency price feeds
+2. **Switchboard** - Decentralized oracle network with TWAP
+3. **Scope** - Aggregated pricing from multiple sources
+
+### Price Staleness
+
+Monitor price feed freshness:
+
+```typescript
+const reserve = await program.account.reserve.fetch(reservePubkey);
+const priceAge = currentTimestamp - reserve.liquidity.marketPriceLastUpdatedTs;
+const maxAge = reserve.config.tokenInfo.maxAge; // In seconds
+
+if (priceAge > maxAge) {
+  console.warn(`Price is stale! Age: ${priceAge}s, Max: ${maxAge}s`);
+}
+```
+
+**Alert thresholds:**
+- Age > 50% of max age (warning)
+- Age > max age (critical - price will be rejected)
+- Price not updating (oracle offline)
+
+### Price Divergence
+
+For tokens with multiple oracle sources, monitor divergence:
+
+```typescript
+const pythPrice = await getPythPrice(reserve.config.tokenInfo.pythPrice);
+const scopePrice = await getScopePrice(reserve.config.tokenInfo.scopePriceFeed);
+
+const divergence = Math.abs(pythPrice - scopePrice) / pythPrice;
+const maxDivergence = reserve.config.tokenInfo.maxTwapDivergenceBps / 10000;
+
+if (divergence > maxDivergence) {
+  console.error(`Price divergence detected: ${divergence * 100}%`);
+}
+```
+
+**Alert if:**
+- Divergence > configured threshold
+- Prices moving in opposite directions
+- One feed static while others move
+
+### Oracle Failures
+
+Handle oracle outages gracefully:
+
+```typescript
+try {
+  await program.methods.refreshReserve().rpc();
+} catch (error) {
+  if (error.message.includes('InvalidOracleConfig')) {
+    console.error('Oracle configuration invalid');
+    // Alert admin
+  } else if (error.message.includes('StalePrice')) {
+    console.error('Price too old');
+    // Try to refresh price feed
+  }
+}
+```
+
+## Querying On-Chain State
+
+### Using RPC
+
+```typescript
+const connection = new Connection(rpcUrl);
+
+// Get single account
+const accountInfo = await connection.getAccountInfo(reservePubkey);
+const reserve = program.coder.accounts.decode('Reserve', accountInfo.data);
+
+// Get multiple accounts
+const reserves = await program.account.reserve.all();
+
+// Get filtered accounts
+const marketReserves = await program.account.reserve.all([
+  {
+    memcmp: {
+      offset: 8 + 8 + 8 + 16, // Skip to lendingMarket field
+      bytes: lendingMarket.toBase58(),
+    },
+  },
+]);
+```
+
+### Using getProgramAccounts
+
+```typescript
+// More efficient for large-scale queries
+const accounts = await connection.getProgramAccounts(
+  program.programId,
+  {
+    filters: [
+      { dataSize: RESERVE_SIZE },
+      {
+        memcmp: {
+          offset: 8 + 8 + 8 + 16,
+          bytes: lendingMarket.toBase58(),
+        },
+      },
+    ],
+  }
+);
+```
+
+### Subscription for Real-Time Updates
+
+```typescript
+const subscriptionId = connection.onAccountChange(
+  reservePubkey,
+  (accountInfo) => {
+    const reserve = program.coder.accounts.decode('Reserve', accountInfo.data);
+    console.log('Reserve updated:', reserve);
+    
+    // Check metrics and alert
+    checkReserveHealth(reserve);
+  },
+  'confirmed'
+);
+
+// Later: unsubscribe
+connection.removeAccountChangeListener(subscriptionId);
+```
+
+## Monitoring Tools and Strategies
+
+### Recommended Stack
+
+1. **Metrics Database**: Prometheus or InfluxDB for time-series data
+2. **Dashboards**: Grafana for visualization
+3. **Alerting**: PagerDuty, Opsgenie, or Grafana alerts
+4. **Logging**: CloudWatch, Datadog, or self-hosted ELK stack
+5. **On-Chain Data**: Custom indexer or The Graph subgraph
+
+### Alert Priorities
+
+**P0 - Critical (Immediate Response)**
+- Emergency mode activated
+- Oracle complete failure
+- Protocol exploit detected
+- Insolvency risk
+
+**P1 - High (< 1 hour)**
+- Liquidation threshold exceeded (no liquidations occurring)
+- Price staleness exceeding limits
+- Utilization > 95%
+- Unusual borrowing patterns
+
+**P2 - Medium (< 4 hours)**
+- Approaching deposit/borrow limits
+- Sustained high utilization (> 90%)
+- Fee accumulation anomalies
+- Withdrawal cap hits
+
+**P3 - Low (< 24 hours)**
+- Suboptimal utilization rates
+- Minor price feed issues
+- Performance degradation
+
+### Automation Recommendations
+
+1. **Periodic Refresh**: Cron job to refresh reserves every hour
+2. **Health Checks**: Monitor all obligations every 5-10 minutes
+3. **Price Monitoring**: Check oracle feeds every minute
+4. **Limit Checks**: Verify limits and caps every 15 minutes
+5. **Emergency Actions**: Automated emergency mode trigger for critical events
+
+### Dashboard Metrics
+
+Key dashboard panels:
+
+- Total Value Locked (TVL) by reserve
+- Overall utilization rate
+- Total borrowed value vs global limit
+- Number of liquidatable obligations
+- Protocol fee accumulation rate
+- Average LTV across all obligations
+- Borrow rate trends
+- Oracle price trends with divergence
+
+## Best Practices
+
+1. **Redundancy**: Monitor from multiple vantage points and RPC providers
+2. **Historical Data**: Retain metrics for trend analysis and forensics
+3. **Dry Runs**: Test alert systems and runbooks regularly
+4. **Documentation**: Maintain runbooks for all alert types
+5. **Escalation**: Clear escalation paths for different severity levels
+6. **Rate Limiting**: Respect RPC rate limits, use multiple providers
+7. **Graceful Degradation**: Handle RPC failures and partial data
+8. **Security**: Protect monitoring infrastructure, use read-only keys
+
+## Related Operations
+
+- [Market Management](/operations/market-management) - Configure market-level parameters
+- [Reserve Configuration](/operations/reserve-configuration) - Configure reserve risk parameters
+- [Deployment](/operations/deployment) - Initial setup and deployment

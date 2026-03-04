@@ -1,0 +1,490 @@
+---
+title: "Auto-Deleveraging"
+description: "Automatic position reduction during high volatility and risk periods"
+---
+
+## Overview
+
+Auto-deleveraging is a risk management mechanism that allows Kamino Lending market owners to mark risky obligations for automatic position reduction. This protects the protocol during periods of high volatility by giving users a grace period to reduce their leverage before facing liquidation.
+
+## How Auto-Deleveraging Works
+
+### Mark Obligation for Deleveraging
+
+**Handler**: `handler_mark_obligation_for_deleveraging.rs:8`
+
+```rust
+pub fn mark_obligation_for_deleveraging(
+    ctx: Context<MarkObligationForDeleveraging>,
+    autodeleverage_target_ltv_pct: u8,
+) -> Result<()>
+```
+
+**Implementation** (`lending_operations.rs:1892`):
+```rust
+pub fn mark_obligation_for_deleveraging(
+    lending_market: &LendingMarket,
+    obligation: &mut Obligation,
+    autodeleverage_target_ltv_pct: u8,
+    timestamp: u64,
+) -> Result<()>
+```
+
+**Authority**: Only the `lending_market_owner` can mark obligations for deleveraging (`handler_mark_obligation_for_deleveraging.rs:26`).
+
+### When Auto-Deleveraging Triggers
+
+Auto-deleveraging is typically used during:
+
+1. **High Volatility**: Sudden market movements increase liquidation risk
+2. **Price Oracle Issues**: Unreliable price feeds create uncertainty
+3. **Large Position Risk**: Oversized positions that threaten protocol solvency
+4. **Pre-Liquidation Warning**: Give users time to act before forced liquidation
+
+**Manual Trigger**: Market owners monitor risk metrics and manually mark obligations when risk thresholds are exceeded.
+
+## Target LTV Configuration
+
+### Setting Target LTV
+
+**Validation** (`lending_operations.rs:1915`):
+```rust
+if autodeleverage_target_ltv_pct > 100 {
+    msg!(
+        "Percentage outside valid range: {}",
+        autodeleverage_target_ltv_pct
+    );
+    return err!(LendingError::InvalidConfig);
+}
+```
+
+**Target LTV** must be between 0 and 100 (representing 0% to 100%).
+
+**Example Target LTVs**:
+- `70`: User must reduce LTV to 70% or below
+- `50`: User must reduce LTV to 50% or below (more aggressive)
+- `0`: User must completely close the position (full deleverage)
+
+### Unmarking for Deleveraging
+
+**Special Value** (`lending_operations.rs:1900`):
+```rust
+if autodeleverage_target_ltv_pct == NO_DELEVERAGING_MARKER {
+    if obligation.is_marked_for_deleveraging() {
+        msg!(
+            "Unmarking deleveraged obligation (was started at timestamp {} with target LTV {}%)",
+            obligation.autodeleverage_margin_call_started_timestamp,
+            obligation.autodeleverage_target_ltv_pct
+        );
+        obligation.unmark_for_deleveraging()
+    } else {
+        msg!("No-op unmarking of not-currently-marked obligation");
+    }
+    return Ok(());
+}
+```
+
+**`NO_DELEVERAGING_MARKER`** (typically 255) is used to unmark an obligation.
+
+## Deleveraging Margin Call Period
+
+### Configuration
+
+**Lending Market Field** (`state/lending_market.rs:127`):
+```rust
+pub struct LendingMarket {
+    // ...
+    pub individual_autodeleverage_margin_call_period_secs: u64,
+    // ...
+}
+```
+
+**Requirement** (`lending_operations.rs:1930`):
+```rust
+if lending_market.individual_autodeleverage_margin_call_period_secs == 0 {
+    msg!("Lending market is missing the `individual_autodeleverage_margin_call_period_secs` configuration");
+    return err!(LendingError::InvalidConfig);
+}
+```
+
+This field **must be configured** before marking obligations for deleveraging.
+
+**Typical Values**:
+- `3600`: 1 hour grace period
+- `14400`: 4 hour grace period
+- `86400`: 24 hour grace period
+
+### Grace Period Mechanism
+
+When marked for deleveraging:
+
+1. **Timestamp Recorded** (`state/obligation.rs:495`):
+```rust
+pub fn mark_for_deleveraging(&mut self, current_timestamp: u64, target_ltv_pct: u8) {
+    if current_timestamp == 0 {
+        panic!("value reserved for non-marked state");
+    }
+    self.autodeleverage_margin_call_started_timestamp = current_timestamp;
+    self.autodeleverage_target_ltv_pct = target_ltv_pct;
+}
+```
+
+2. **User Has Grace Period**: `individual_autodeleverage_margin_call_period_secs` to reduce position
+
+3. **After Grace Period**: Liquidators can liquidate with special autodeleverage rules
+
+### Checking Deleveraging Status
+
+**Is Marked Check** (`state/obligation.rs:491`):
+```rust
+pub fn is_marked_for_deleveraging(&self) -> bool {
+    self.autodeleverage_margin_call_started_timestamp != 0
+}
+```
+
+**Preventing New Borrows** (`lending_operations.rs:211`):
+```rust
+obligation.check_not_marked_for_deleveraging()?;
+```
+
+**Implementation** (`state/obligation.rs:508`):
+```rust
+pub fn check_not_marked_for_deleveraging(&self) -> Result<()> {
+    if self.is_marked_for_deleveraging() {
+        xmsg!(
+            "Obligation marked for deleveraging since {}",
+            self.autodeleverage_margin_call_started_timestamp
+        );
+        return err!(LendingError::ObligationCurrentlyMarkedForDeleveraging);
+    }
+    Ok(())
+}
+```
+
+Once marked, users **cannot borrow more** until they deleverage.
+
+## Obligation State Changes
+
+### Obligation Fields
+
+**Tracking Fields** (`state/obligation.rs:75`):
+```rust
+pub struct Obligation {
+    // ...
+    pub autodeleverage_target_ltv_pct: u8,
+    pub autodeleverage_margin_call_started_timestamp: u64,
+    // ...
+}
+```
+
+**Initial State**:
+```rust
+autodeleverage_target_ltv_pct: 0,
+autodeleverage_margin_call_started_timestamp: 0,
+```
+
+**Marked State**:
+```rust
+autodeleverage_target_ltv_pct: 70,  // Target LTV
+autodeleverage_margin_call_started_timestamp: 1678901234,  // Unix timestamp
+```
+
+### Unmarking Process
+
+**Unmark Implementation** (`state/obligation.rs:503`):
+```rust
+pub fn unmark_for_deleveraging(&mut self) {
+    self.autodeleverage_margin_call_started_timestamp = 0;
+    self.autodeleverage_target_ltv_pct = 0;
+}
+```
+
+Market owners can unmark obligations if:
+- User successfully deleverages to target LTV
+- Market conditions improve
+- Risk assessment changes
+
+## Threshold Decrease During Deleveraging
+
+During the grace period, liquidation thresholds may be progressively decreased to incentivize deleveraging:
+
+**Liquidation Check** (`state/liquidation_operations.rs:476`):
+```rust
+if !obligation.is_marked_for_deleveraging() {
+    // Normal liquidation rules
+} else {
+    // Special autodeleverage liquidation rules
+    // May use lower thresholds or higher bonuses
+}
+```
+
+The exact threshold decrease logic depends on:
+- Time elapsed since marking
+- Target LTV vs current LTV
+- Market configuration
+
+## Monitoring and Prevention
+
+### User-Side Monitoring
+
+```typescript
+import { Connection, PublicKey } from '@solana/web3.js';
+import { KaminoObligation } from './kamino-sdk';
+
+class AutoDeleverageMonitor {
+  constructor(
+    private connection: Connection,
+    private obligation: PublicKey
+  ) {}
+  
+  async checkDeleveragingStatus() {
+    const obligationData = await this.loadObligation();
+    
+    if (obligationData.autodeleverageMarginCallStartedTimestamp === 0) {
+      console.log("✓ Obligation not marked for deleveraging");
+      return {
+        marked: false,
+        targetLtv: null,
+        markedAt: null,
+        timeRemaining: null,
+      };
+    }
+    
+    const markedAt = obligationData.autodeleverageMarginCallStartedTimestamp;
+    const targetLtv = obligationData.autodeleverageTargetLtvPct;
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    // Fetch lending market to get grace period
+    const lendingMarketData = await this.loadLendingMarket(
+      obligationData.lendingMarket
+    );
+    const gracePeriod = lendingMarketData.individualAutodeleverageMarginCallPeriodSecs;
+    
+    const deadline = markedAt + gracePeriod;
+    const timeRemaining = Math.max(0, deadline - currentTime);
+    
+    console.log(`⚠️  MARKED FOR DELEVERAGING`);
+    console.log(`   Target LTV: ${targetLtv}%`);
+    console.log(`   Marked At: ${new Date(markedAt * 1000)}`);
+    console.log(`   Time Remaining: ${this.formatTime(timeRemaining)}`);
+    
+    return {
+      marked: true,
+      targetLtv,
+      markedAt,
+      timeRemaining,
+      deadline,
+    };
+  }
+  
+  async calculateCurrentLTV(): Promise<number> {
+    const obligationData = await this.loadObligation();
+    
+    const depositedValue = obligationData.depositedValueSf;
+    const borrowedValue = obligationData.borrowedAssetsMarketValueSf;
+    
+    if (depositedValue === 0) return 0;
+    
+    return (borrowedValue / depositedValue) * 100;
+  }
+  
+  async suggestDeleverageActions() {
+    const status = await this.checkDeleveragingStatus();
+    if (!status.marked) return [];
+    
+    const currentLtv = await this.calculateCurrentLTV();
+    const targetLtv = status.targetLtv!;
+    
+    if (currentLtv <= targetLtv) {
+      return ["Current LTV is below target - contact market owner to unmark"];
+    }
+    
+    const ltvReduction = currentLtv - targetLtv;
+    
+    return [
+      `Option 1: Repay ${ltvReduction.toFixed(2)}% of debt`,
+      `Option 2: Deposit more collateral to reduce LTV`,
+      `Option 3: Combination of repayment and collateral deposit`,
+      `⏰ Time remaining: ${this.formatTime(status.timeRemaining!)}`,
+    ];
+  }
+  
+  private formatTime(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }
+  
+  private async loadObligation() {
+    // Load and deserialize obligation account
+    const accountInfo = await this.connection.getAccountInfo(this.obligation);
+    return deserializeObligation(accountInfo!.data);
+  }
+  
+  private async loadLendingMarket(lendingMarket: PublicKey) {
+    const accountInfo = await this.connection.getAccountInfo(lendingMarket);
+    return deserializeLendingMarket(accountInfo!.data);
+  }
+}
+
+// Usage
+const monitor = new AutoDeleverageMonitor(connection, userObligation);
+
+// Check status
+const status = await monitor.checkDeleveragingStatus();
+
+// Get suggestions
+const actions = await monitor.suggestDeleverageActions();
+actions.forEach(action => console.log(action));
+```
+
+### Prevention Strategies
+
+**1. Maintain Healthy LTV**:
+```typescript
+const SAFE_LTV_THRESHOLD = 70; // Stay below 70% LTV
+const WARNING_LTV_THRESHOLD = 80;
+
+const currentLtv = await monitor.calculateCurrentLTV();
+
+if (currentLtv > WARNING_LTV_THRESHOLD) {
+  console.warn("⚠️  LTV dangerously high - consider reducing position");
+  // Automatically repay or deposit more
+  await autoReduceLTV(targetLtv = SAFE_LTV_THRESHOLD);
+}
+```
+
+**2. Set Up Alerts**:
+```typescript
+const setupDeleverageAlert = async () => {
+  setInterval(async () => {
+    const status = await monitor.checkDeleveragingStatus();
+    
+    if (status.marked && status.timeRemaining! < 3600) { // Less than 1 hour
+      await sendUrgentAlert(
+        `URGENT: ${status.timeRemaining! / 60} minutes to deleverage!"
+      );
+    }
+  }, 60_000); // Check every minute
+};
+```
+
+**3. Automated Response**:
+```typescript
+const autoDeleverage = async (targetLtv: number) => {
+  const currentLtv = await monitor.calculateCurrentLTV();
+  const obligationData = await loadObligation();
+  
+  if (currentLtv <= targetLtv) {
+    console.log("Already at target LTV");
+    return;
+  }
+  
+  // Calculate required repayment
+  const borrowedValue = obligationData.borrowedAssetsMarketValueSf;
+  const depositedValue = obligationData.depositedValueSf;
+  
+  const targetBorrowValue = depositedValue * (targetLtv / 100);
+  const repayValue = borrowedValue - targetBorrowValue;
+  
+  // Repay largest borrow first
+  const largestBorrow = findLargestBorrow(obligationData);
+  await repayObligation(largestBorrow.reserve, repayValue);
+  
+  console.log(`✓ Deleveraged to ${targetLtv}% LTV`);
+};
+```
+
+## Market Owner Workflow
+
+```typescript
+class MarketOwnerDeleverageTool {
+  async identifyRiskyObligations(
+    lendingMarket: PublicKey,
+    riskThreshold: number = 95 // 95% LTV
+  ): Promise<PublicKey[]> {
+    const obligations = await this.getAllObligations(lendingMarket);
+    
+    return obligations.filter(obl => {
+      const ltv = this.calculateLTV(obl);
+      return ltv >= riskThreshold;
+    }).map(obl => obl.publicKey);
+  }
+  
+  async markForDeleveraging(
+    obligation: PublicKey,
+    targetLtvPct: number
+  ) {
+    const ix = await createMarkObligationForDeleveragingInstruction({
+      lendingMarketOwner: marketOwnerWallet.publicKey,
+      obligation,
+      lendingMarket,
+      autodeleverage_target_ltv_pct: targetLtvPct,
+    });
+    
+    const tx = new Transaction().add(ix);
+    const sig = await sendAndConfirmTransaction(connection, tx, [marketOwnerWallet]);
+    
+    console.log(`Marked obligation for deleveraging. Target LTV: ${targetLtvPct}%`);
+    return sig;
+  }
+  
+  async unmarkObligation(obligation: PublicKey) {
+    const NO_DELEVERAGING_MARKER = 255;
+    
+    const ix = await createMarkObligationForDeleveragingInstruction({
+      lendingMarketOwner: marketOwnerWallet.publicKey,
+      obligation,
+      lendingMarket,
+      autodeleverage_target_ltv_pct: NO_DELEVERAGING_MARKER,
+    });
+    
+    await sendAndConfirmTransaction(connection, new Transaction().add(ix), [marketOwnerWallet]);
+    console.log("Obligation unmarked");
+  }
+}
+```
+
+## Best Practices
+
+### For Users
+
+1. **Monitor positions**: Regularly check LTV and deleveraging status
+2. **Maintain buffer**: Keep LTV well below liquidation threshold
+3. **Set alerts**: Get notified immediately when marked for deleveraging
+4. **Act quickly**: Use the grace period to reduce risk
+5. **Understand target**: Know what LTV you need to achieve
+
+### For Market Owners
+
+1. **Configure grace period**: Set reasonable `individual_autodeleverage_margin_call_period_secs`
+2. **Conservative targets**: Set target LTVs that leave safety margin
+3. **Clear communication**: Notify users when marking positions
+4. **Monitor compliance**: Track if users are deleveraging
+5. **Unmark when safe**: Remove marking once risk is mitigated
+
+## Errors
+
+**ObligationCurrentlyMarkedForDeleveraging**:
+```rust
+return err!(LendingError::ObligationCurrentlyMarkedForDeleveraging);
+```
+User tried to borrow while marked - must deleverage first.
+
+**InvalidConfig**:
+```rust
+return err!(LendingError::InvalidConfig);
+```
+- `autodeleverage_target_ltv_pct` > 100
+- `individual_autodeleverage_margin_call_period_secs` not set
+
+## Summary
+
+Auto-deleveraging provides a controlled mechanism for risk management:
+
+- **Proactive**: Prevents liquidations during volatile periods
+- **User-friendly**: Gives grace period to adjust positions
+- **Flexible**: Configurable target LTV and grace periods
+- **Transparent**: Clear on-chain state tracking
+
+Use monitoring tools and automation to respond quickly when marked for deleveraging.

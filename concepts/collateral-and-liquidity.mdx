@@ -1,0 +1,630 @@
+---
+title: 'Collateral and Liquidity'
+description: 'Understanding LTV ratios, liquidation thresholds, borrow factors, and utilization mechanics'
+---
+
+## Overview
+
+Kamino Lending uses a sophisticated system of collateral ratios and liquidity metrics to manage risk while maximizing capital efficiency. This page explains how these mechanisms work together to maintain protocol solvency.
+
+## Collateral Ratios
+
+Each reserve has multiple ratio parameters that govern borrowing and liquidations:
+
+### Maximum Loan-to-Value (LTV)
+
+The max LTV determines how much users can borrow against their collateral (from `state/reserve.rs:1341`):
+
+```rust
+pub struct ReserveConfig {
+    pub loan_to_value_pct: u8,  // e.g., 75 = 75% LTV
+    // ...
+}
+```
+
+**Example**:
+```
+Collateral: 100 SOL @ $150/SOL = $15,000
+Max LTV: 75%
+Max borrow: $15,000 × 0.75 = $11,250
+```
+
+**Typical Values**:
+- Stablecoins (USDC, USDT): 85-90%
+- Major assets (SOL, ETH): 70-75%
+- Volatile assets: 50-60%
+- Exotic/risky assets: 25-40%
+
+### Liquidation Threshold
+
+The liquidation threshold is higher than max LTV, providing a safety buffer (from `state/reserve.rs:1343`):
+
+```rust
+pub liquidation_threshold_pct: u8,  // e.g., 80 = 80% threshold
+```
+
+**Relationship**:
+```
+0% ≤ max_ltv < liquidation_threshold ≤ 100%
+
+Typical spread: 5-10%
+```
+
+**Example**:
+```
+Max LTV: 75%
+Liquidation threshold: 80%
+Buffer: 5%
+
+Users can borrow up to 75% LTV
+Position becomes liquidatable at 80% LTV
+Safety margin: 6.7% price drop before liquidation
+```
+
+### Calculating Position LTV
+
+For multi-collateral positions, LTV is calculated as a weighted average:
+
+**Allowed Borrow Value** (from obligation refresh logic):
+```rust
+let allowed_borrow_value: u128 = deposits
+    .iter()
+    .map(|d| d.market_value_sf * reserve_ltv_pct / 100)
+    .sum();
+```
+
+**Unhealthy Borrow Value**:
+```rust
+let unhealthy_borrow_value: u128 = deposits
+    .iter()
+    .map(|d| d.market_value_sf * reserve_liq_threshold_pct / 100)
+    .sum();
+```
+
+**Current LTV**:
+```rust
+pub fn loan_to_value(&self) -> Fraction {
+    Fraction::from_bits(self.borrow_factor_adjusted_debt_value_sf)
+        / Fraction::from_bits(self.deposited_value_sf)
+}
+```
+
+### Multi-Asset Example
+
+```
+Deposits:
+  SOL:  $10,000 (max LTV 75%, liq threshold 80%)
+  USDC: $5,000  (max LTV 90%, liq threshold 95%)
+  Total: $15,000
+
+Allowed borrow:
+  = ($10,000 × 0.75) + ($5,000 × 0.90)
+  = $7,500 + $4,500
+  = $12,000
+
+Liquidation threshold:
+  = ($10,000 × 0.80) + ($5,000 × 0.95)
+  = $8,000 + $4,750
+  = $12,750
+
+If user borrows $11,000:
+  Current LTV = $11,000 / $15,000 = 73.3%
+  Distance to liquidation = $12,750 - $11,000 = $1,750 (13.7% buffer)
+```
+
+## Borrow Factor
+
+Borrow factors adjust debt value for risk management (from `state/reserve.rs:1362`):
+
+```rust
+pub borrow_factor_pct: u64,  // e.g., 120 = 120% borrow factor
+
+pub fn get_borrow_factor(&self) -> Fraction {
+    max(
+        Fraction::ONE,
+        Fraction::from_percent(self.borrow_factor_pct),
+    )
+}
+```
+
+### How Borrow Factors Work
+
+Borrow factors multiply the debt's impact on LTV calculations:
+
+**Without Borrow Factor** (100%):
+```
+Borrow $1,000 → counts as $1,000 debt
+```
+
+**With Borrow Factor** (120%):
+```
+Borrow $1,000 → counts as $1,200 debt
+```
+
+**In Obligation** (from `state/reserve.rs:169`):
+
+```rust
+pub fn borrow_factor_f(&self, is_in_elevation_group: bool) -> Fraction {
+    if is_in_elevation_group {
+        Fraction::ONE  // No borrow factor in elevation groups
+    } else {
+        self.config.get_borrow_factor()
+    }
+}
+```
+
+### Purpose of Borrow Factors
+
+1. **Volatility Protection**: Higher factors for volatile assets
+2. **Oracle Risk**: Higher factors when price feeds are less reliable
+3. **Liquidity Risk**: Higher factors for assets with limited DEX liquidity
+4. **Asymmetric Risk**: Protects against rapid price drops
+
+**Example Impact**:
+
+```
+User borrows 10 ETH @ $2,000 = $20,000
+
+With 100% borrow factor:
+  Debt for LTV = $20,000
+  
+With 125% borrow factor:
+  Debt for LTV = $20,000 × 1.25 = $25,000
+  
+If collateral is 50 SOL @ $150 = $22,500 (75% max LTV):
+  Max borrow capacity = $22,500 × 0.75 = $16,875
+  
+  Without factor: Can borrow up to $16,875
+  With factor: Can only borrow $16,875 / 1.25 = $13,500
+  
+Safety buffer = ($16,875 - $13,500) / $16,875 = 20%
+```
+
+### Setting Borrow Factors
+
+**Typical Values**:
+- Stablecoins: 100% (no adjustment)
+- Major assets: 100-110%
+- Volatile assets: 115-130%
+- High-risk assets: 130-150%
+
+## Utilization Rate
+
+Utilization measures how much of the available liquidity is borrowed (from `state/reserve.rs:977`):
+
+```rust
+pub fn utilization_rate(&self) -> Fraction {
+    let total_supply = self.total_supply();
+    if total_supply == Fraction::ZERO {
+        return Fraction::ZERO;
+    }
+    Fraction::from_bits(self.borrowed_amount_sf) / total_supply
+}
+```
+
+**Formula**:
+```
+utilization = borrowed_amount / total_supply
+
+where:
+  total_supply = available_liquidity + borrowed_amount - fees
+```
+
+**Example**:
+```
+Reserve state:
+  Available in vault: 400,000 USDC
+  Borrowed: 600,000 USDC
+  Total supply: 1,000,000 USDC
+  
+Utilization = 600,000 / 1,000,000 = 60%
+```
+
+## Interest Rate Model
+
+Interest rates dynamically adjust based on utilization via a piecewise linear curve.
+
+### Borrow Rate Curve
+
+From `utils/borrow_rate_curve.rs:21`:
+
+```rust
+pub struct BorrowRateCurve {
+    pub points: [CurvePoint; 11],  // Up to 11 points defining the curve
+}
+
+pub struct CurvePoint {
+    pub utilization_rate_bps: u32,  // 0-10000 (0%-100%)
+    pub borrow_rate_bps: u32,       // Annual rate in basis points
+}
+```
+
+### Rate Calculation
+
+From `utils/borrow_rate_curve.rs:279`:
+
+```rust
+pub fn get_borrow_rate(&self, utilization_rate: Fraction) -> Result<Fraction> {
+    // Find segment containing current utilization
+    let (start_pt, end_pt) = self.points
+        .windows(2)
+        .find(|seg| {
+            let [first, second] = seg;
+            utilization_rate_bps >= first.utilization_rate_bps
+                && utilization_rate_bps <= second.utilization_rate_bps
+        })
+        .unwrap();
+    
+    // Linear interpolation between points
+    let segment = CurveSegment::from_points(*start_pt, *end_pt)?;
+    segment.get_borrow_rate(utilization_rate)
+}
+```
+
+### Example Curve
+
+```
+Utilization | Borrow APY | Supply APY (80% to lenders)
+    0%      |     1%     |     0.8%
+   20%      |     2%     |     1.6%
+   40%      |     4%     |     3.2%
+   60%      |     8%     |     4.8%
+   80%      |    15%     |     9.6%
+   90%      |    30%     |    21.6%
+  100%      |   100%     |    80.0%
+```
+
+**Key Features**:
+- Low rates at low utilization → encourage borrowing
+- Moderate rates at mid utilization → balanced market
+- High rates at high utilization → encourage repayment and deposits
+- Very high rates near 100% → prevent liquidity exhaustion
+
+### Supply APY Calculation
+
+Lenders earn interest on the borrowed portion:
+
+```
+supply_apy = borrow_apy × utilization × (1 - protocol_take_rate)
+```
+
+**Example** (60% utilization, 8% borrow APY, 20% protocol fee):
+```
+supply_apy = 8% × 0.60 × (1 - 0.20)
+           = 8% × 0.60 × 0.80
+           = 3.84%
+```
+
+### Interest Compounding
+
+Interest compounds every slot (from `state/reserve.rs:1810`):
+
+```rust
+pub fn approximate_compounded_interest(
+    rate: Fraction, 
+    elapsed_slots: u64
+) -> Fraction {
+    let base = rate / u128::from(SLOTS_PER_YEAR);
+    
+    // Approximation: (1 + rate/slots_per_year)^elapsed_slots
+    // Using Taylor series for efficiency
+    match elapsed_slots {
+        0 => return Fraction::ONE,
+        1 => return Fraction::ONE + base,
+        2 => return (Fraction::ONE + base) * (Fraction::ONE + base),
+        // ... optimized calculation
+    }
+}
+```
+
+**Compounding Frequency**:
+```
+Slots per second: ~2.5
+Slots per year: ~78,840,000
+
+With 10% APY:
+  Rate per slot = 10% / 78,840,000 = 0.000000127%
+  Effective APY = (1 + 0.000000127%)^78,840,000 - 1 ≈ 10.52%
+```
+
+The high frequency compounding slightly increases effective rates.
+
+## Liquidation Mechanics
+
+### Liquidation Bonus
+
+Liquidators receive bonus collateral as incentive (from `state/reserve.rs:1345`):
+
+```rust
+pub min_liquidation_bonus_bps: u16,     // e.g., 300 = 3%
+pub max_liquidation_bonus_bps: u16,     // e.g., 1000 = 10%
+pub bad_debt_liquidation_bonus_bps: u16, // e.g., 1500 = 15%
+```
+
+**Dynamic Bonus**: Increases as position becomes more unhealthy
+
+```
+Current LTV = 82%
+Liquidation threshold = 80%
+
+Bonus calculation (simplified):
+  health_factor = liquidation_threshold / current_ltv
+                = 80% / 82% = 0.976
+  
+  bonus_bps = min_bonus + (max_bonus - min_bonus) × (1 - health_factor)
+            = 300 + (1000 - 300) × (1 - 0.976)
+            = 300 + 700 × 0.024
+            = 317 bps = 3.17%
+```
+
+### Close Factor
+
+Limits how much debt can be repaid in a single liquidation (from `state/lending_market.rs:67`):
+
+```rust
+pub liquidation_max_debt_close_factor_pct: u8,  // Default 50%
+```
+
+**Purpose**:
+- Prevents excessive liquidation of slightly underwater positions
+- Allows multiple liquidators to participate
+- Reduces liquidation slippage impact
+
+**Example**:
+```
+Position:
+  Collateral: $12,000
+  Debt: $10,000
+  Close factor: 50%
+  Bonus: 5%
+
+Liquidation:
+  Max debt repayment: $10,000 × 50% = $5,000
+  Collateral seized: $5,000 × 1.05 = $5,250
+  
+After liquidation:
+  Collateral: $12,000 - $5,250 = $6,750
+  Debt: $10,000 - $5,000 = $5,000
+  New LTV: $5,000 / $6,750 = 74.1% (healthy again)
+```
+
+### Bad Debt Handling
+
+When a position's debt exceeds collateral value:
+
+1. **Maximum Bonus Applied**: `bad_debt_liquidation_bonus_bps`
+2. **Socialized Loss**: If collateral insufficient, loss may be socialized
+3. **Protocol Insurance**: Some protocols maintain insurance funds
+
+From `lib.rs:95`:
+
+```rust
+pub fn socialize_loss_v2(
+    ctx: Context<SocializeLossV2>, 
+    liquidity_amount: u64
+) -> Result<()> {
+    // Distributes bad debt across all lenders
+    // Reduces cToken exchange rate proportionally
+}
+```
+
+## Deposit and Borrow Limits
+
+### Deposit Limits
+
+From `state/reserve.rs:1365`:
+
+```rust
+pub deposit_limit: u64,  // Maximum total deposits (in native tokens)
+```
+
+**Purpose**:
+- Risk concentration limits
+- Oracle reliability considerations
+- Liquidation capacity constraints
+
+**Example**:
+```
+USDC Reserve:
+  Deposit limit: 10,000,000 USDC
+  Current deposits: 8,500,000 USDC
+  Available capacity: 1,500,000 USDC
+```
+
+### Borrow Limits
+
+Multiple layers of borrow limits:
+
+1. **Reserve-level** (from `state/reserve.rs:1367`):
+```rust
+pub borrow_limit: u64,  // Total borrow cap
+```
+
+2. **Outside elevation group** (from `state/reserve.rs:1400`):
+```rust
+pub borrow_limit_outside_elevation_group: u64,
+```
+
+3. **Per-elevation-group** (from `state/reserve.rs:1406`):
+```rust
+pub borrow_limit_against_this_collateral_in_elevation_group: [u64; 32],
+```
+
+4. **Market-level** (from `state/lending_market.rs:84`):
+```rust
+pub global_allowed_borrow_value: u64,  // Total protocol borrow cap (USD)
+```
+
+### Limit Tracking
+
+When limits are crossed, timestamps are recorded (from `state/reserve.rs:477`):
+
+```rust
+pub fn update_deposit_limit_crossed_timestamp(&mut self, timestamp: u64) {
+    if self.deposit_limit_crossed() {
+        if self.liquidity.deposit_limit_crossed_timestamp == 0 {
+            self.liquidity.deposit_limit_crossed_timestamp = timestamp;
+        }
+    } else {
+        self.liquidity.deposit_limit_crossed_timestamp = 0;
+    }
+}
+```
+
+## Utilization-Based Restrictions
+
+Borrowing can be disabled above certain utilization (from `state/reserve.rs:1380`):
+
+```rust
+pub utilization_limit_block_borrowing_above_pct: u8,  // e.g., 95
+```
+
+**Purpose**: Ensure liquidity remains available for withdrawals
+
+**Example**:
+```
+Reserve configuration:
+  Utilization limit: 95%
+  Current utilization: 94%
+  
+Available to borrow:
+  Total supply: 1,000,000 USDC
+  Currently borrowed: 940,000 USDC
+  Max borrowable: (1,000,000 × 0.95) - 940,000 = 10,000 USDC
+  
+If utilization hits 95%:
+  New borrows blocked
+  Repayments and deposits still allowed
+  Utilization must fall below 95% before borrowing resumes
+```
+
+## Risk Parameter Guidelines
+
+<AccordionGroup>
+  <Accordion title="Setting LTV Ratios">
+    **Factors to Consider**:
+    - Asset volatility (lower LTV for volatile assets)
+    - Oracle reliability (lower LTV for less reliable oracles)
+    - DEX liquidity (lower LTV for illiquid assets)
+    - Correlation (higher LTV for correlated pairs in elevation groups)
+    
+    **Conservative Approach**:
+    ```
+    liquidation_threshold = max_ltv × 1.07 to 1.10
+    
+    Example:
+      max_ltv = 75%
+      liquidation_threshold = 75% × 1.07 = 80.25%
+    ```
+  </Accordion>
+  
+  <Accordion title="Configuring Borrow Factors">
+    **Risk-Based Tiers**:
+    ```
+    Tier 1 (Stablecoins):        100%
+    Tier 2 (Major assets):       105-110%
+    Tier 3 (Mid-cap tokens):     115-125%
+    Tier 4 (High-risk):          130-150%
+    ```
+    
+    **Special Considerations**:
+    - Elevation groups: Often 100% (isolated risk)
+    - Wrapped assets: Match or exceed underlying
+    - Governance tokens: Higher factors due to governance risk
+  </Accordion>
+  
+  <Accordion title="Interest Rate Curves">
+    **Design Principles**:
+    1. Low rates (0-40% utilization) → encourage borrowing
+    2. Moderate increase (40-80%) → balanced market
+    3. Steep increase (80-95%) → protect liquidity
+    4. Very steep (95-100%) → emergency rates
+    
+    **Example Conservative Curve**:
+    ```
+    0%:   2% APY
+    50%:  5% APY
+    80%:  15% APY
+    90%:  35% APY
+    100%: 150% APY
+    ```
+  </Accordion>
+  
+  <Accordion title="Liquidation Parameters">
+    **Bonus Range**:
+    ```
+    min_liquidation_bonus: 3-5%
+    max_liquidation_bonus: 8-12%
+    bad_debt_bonus: 15-20%
+    ```
+    
+    **Close Factor**: 
+    - 25-50% for most reserves
+    - Higher (50-75%) for stablecoins
+    - Lower (20-25%) for volatile assets
+  </Accordion>
+</AccordionGroup>
+
+## Formula Reference
+
+### LTV Calculations
+
+```
+// Single collateral
+max_borrow = collateral_value × max_ltv
+
+// Multi-collateral
+max_borrow = Σ(collateral_i_value × reserve_i_max_ltv)
+
+// Current LTV
+current_ltv = borrow_factor_adjusted_debt / total_collateral_value
+
+// Health factor
+health_factor = liquidation_threshold_value / borrow_factor_adjusted_debt
+```
+
+### Interest Calculations
+
+```
+// Borrow APY (from curve interpolation)
+borrow_apy = interpolate(utilization, curve_points)
+
+// Supply APY  
+supply_apy = borrow_apy × utilization × (1 - protocol_take_rate)
+
+// Compounding
+effective_apy = (1 + apy/slots_per_year)^slots_per_year - 1
+
+// Debt growth
+new_debt = old_debt × (new_cumulative_rate / old_cumulative_rate)
+```
+
+### Liquidation Calculations
+
+```
+// Liquidation eligibility
+is_liquidatable = borrow_factor_adjusted_debt > unhealthy_borrow_value
+
+// Bonus calculation (simplified)
+bonus = min_bonus + (max_bonus - min_bonus) × unhealthiness_factor
+
+// Collateral seized
+seized_collateral = repaid_debt × (1 + bonus) / collateral_price
+
+// Maximum repay
+max_repay = min(
+    total_debt × close_factor,
+    available_collateral_value / (1 + bonus)
+)
+```
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Reserves" icon="building-columns" href="/concepts/reserves">
+    Learn about reserve configuration and interest rate models
+  </Card>
+  <Card title="Obligations" icon="scale-balanced" href="/concepts/obligations">
+    Understand user positions and health calculations
+  </Card>
+</CardGroup>

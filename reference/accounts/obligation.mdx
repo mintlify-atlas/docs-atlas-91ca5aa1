@@ -1,0 +1,261 @@
+---
+title: Obligation
+description: User position account tracking deposits and borrows
+---
+
+The `Obligation` account represents a user's lending position, tracking all deposited collateral and borrowed assets. Each user can have multiple obligations per lending market.
+
+## Obligation
+
+<ResponseField name="tag" type="u64">
+  Unique identifier tag for the obligation
+</ResponseField>
+
+<ResponseField name="last_update" type="LastUpdate">
+  Last update tracking slot and staleness
+</ResponseField>
+
+<ResponseField name="lending_market" type="Pubkey">
+  Parent lending market this obligation belongs to
+</ResponseField>
+
+<ResponseField name="owner" type="Pubkey">
+  Authority that owns this obligation and can manage it
+</ResponseField>
+
+<ResponseField name="deposits" type="ObligationCollateral[8]">
+  Array of deposited collateral positions (max 8 different assets)
+  
+  <Expandable title="ObligationCollateral fields">
+    <ResponseField name="deposit_reserve" type="Pubkey">
+      Reserve account where collateral is deposited
+    </ResponseField>
+    
+    <ResponseField name="deposited_amount" type="u64">
+      Amount of collateral tokens deposited
+    </ResponseField>
+    
+    <ResponseField name="market_value_sf" type="u128">
+      Market value of deposit in quote currency (scaled fraction)
+    </ResponseField>
+    
+    <ResponseField name="borrowed_amount_against_this_collateral_in_elevation_group" type="u64">
+      Amount borrowed against this specific collateral in elevation group
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="lowest_reserve_deposit_liquidation_ltv" type="u64">
+  Lowest liquidation LTV among all deposited reserves
+</ResponseField>
+
+<ResponseField name="deposited_value_sf" type="u128">
+  Total deposited value in quote currency (scaled fraction)
+</ResponseField>
+
+<ResponseField name="borrows" type="ObligationLiquidity[5]">
+  Array of borrowed positions (max 5 different assets)
+  
+  <Expandable title="ObligationLiquidity fields">
+    <ResponseField name="borrow_reserve" type="Pubkey">
+      Reserve account from which liquidity is borrowed
+    </ResponseField>
+    
+    <ResponseField name="cumulative_borrow_rate_bsf" type="BigFractionBytes">
+      Cumulative borrow rate at time of last update (big fraction)
+    </ResponseField>
+    
+    <ResponseField name="first_borrowed_at_timestamp" type="u64">
+      Unix timestamp when this debt was first borrowed
+    </ResponseField>
+    
+    <ResponseField name="borrowed_amount_sf" type="u128">
+      Amount borrowed including accrued interest (scaled fraction)
+    </ResponseField>
+    
+    <ResponseField name="market_value_sf" type="u128">
+      Market value of borrowed amount in quote currency (scaled fraction)
+    </ResponseField>
+    
+    <ResponseField name="borrow_factor_adjusted_market_value_sf" type="u128">
+      Market value adjusted by borrow factor weight (scaled fraction)
+    </ResponseField>
+    
+    <ResponseField name="borrowed_amount_outside_elevation_groups" type="u64">
+      Amount borrowed outside of any elevation group
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="borrow_factor_adjusted_debt_value_sf" type="u128">
+  Total debt value adjusted by borrow factors (scaled fraction)
+</ResponseField>
+
+<ResponseField name="borrowed_assets_market_value_sf" type="u128">
+  Total borrowed assets market value without borrow factor adjustment (scaled fraction)
+</ResponseField>
+
+<ResponseField name="allowed_borrow_value_sf" type="u128">
+  Maximum allowed borrow value based on deposits and LTV (scaled fraction)
+</ResponseField>
+
+<ResponseField name="unhealthy_borrow_value_sf" type="u128">
+  Borrow value threshold at which position becomes liquidatable (scaled fraction)
+</ResponseField>
+
+<ResponseField name="elevation_group" type="u8">
+  Elevation group ID this obligation belongs to (0 = no elevation group)
+</ResponseField>
+
+<ResponseField name="num_of_obsolete_deposit_reserves" type="u8">
+  Count of deposits in obsolete reserves
+</ResponseField>
+
+<ResponseField name="has_debt" type="u8">
+  Boolean flag indicating if obligation has any outstanding debt
+</ResponseField>
+
+<ResponseField name="referrer" type="Pubkey">
+  Referrer account eligible for referral fees
+</ResponseField>
+
+<ResponseField name="borrowing_disabled" type="u8">
+  Boolean flag disabling borrowing for this specific obligation
+</ResponseField>
+
+<ResponseField name="autodeleverage_target_ltv_pct" type="u8">
+  Target LTV percentage for autodeleverage operations
+</ResponseField>
+
+<ResponseField name="lowest_reserve_deposit_max_ltv_pct" type="u8">
+  Lowest max LTV percentage among all deposited reserves
+</ResponseField>
+
+<ResponseField name="num_of_obsolete_borrow_reserves" type="u8">
+  Count of borrows from obsolete reserves
+</ResponseField>
+
+<ResponseField name="highest_borrow_factor_pct" type="u64">
+  Highest borrow factor percentage among all borrows
+</ResponseField>
+
+<ResponseField name="autodeleverage_margin_call_started_timestamp" type="u64">
+  Unix timestamp when autodeleverage margin call started (0 = not marked)
+</ResponseField>
+
+<ResponseField name="obligation_orders" type="ObligationOrder[2]">
+  Array of limit orders for automated position management
+  
+  <Expandable title="ObligationOrder fields">
+    <ResponseField name="condition_threshold_sf" type="u128">
+      Threshold value for order condition trigger (scaled fraction)
+    </ResponseField>
+    
+    <ResponseField name="opportunity_parameter_sf" type="u128">
+      Parameter defining order opportunity (e.g., amount to deleverage)
+    </ResponseField>
+    
+    <ResponseField name="min_execution_bonus_bps" type="u16">
+      Minimum execution bonus in basis points
+    </ResponseField>
+    
+    <ResponseField name="max_execution_bonus_bps" type="u16">
+      Maximum execution bonus in basis points
+    </ResponseField>
+    
+    <ResponseField name="condition_type" type="u8">
+      Type of condition: Never (0), UserLtvAbove (1), UserLtvBelow (2), DebtCollPriceRatioAbove (3), DebtCollPriceRatioBelow (4), Always (5), LiquidationLtvCloserThan (6)
+    </ResponseField>
+    
+    <ResponseField name="opportunity_type" type="u8">
+      Type of opportunity: DeleverageSingleDebtAmount (0), DeleverageAllDebt (1)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="borrow_order" type="BorrowOrder">
+  Active borrow order for this obligation
+  
+  <Expandable title="BorrowOrder fields">
+    <ResponseField name="debt_liquidity_mint" type="Pubkey">
+      Mint of the token to borrow
+    </ResponseField>
+    
+    <ResponseField name="remaining_debt_amount" type="u64">
+      Remaining amount to be filled
+    </ResponseField>
+    
+    <ResponseField name="filled_debt_destination" type="Pubkey">
+      Destination account for filled borrow amount
+    </ResponseField>
+    
+    <ResponseField name="min_debt_term_seconds" type="u64">
+      Minimum debt term in seconds required for fill
+    </ResponseField>
+    
+    <ResponseField name="fillable_until_timestamp" type="u64">
+      Unix timestamp until which order can be filled
+    </ResponseField>
+    
+    <ResponseField name="placed_at_timestamp" type="u64">
+      Unix timestamp when order was placed
+    </ResponseField>
+    
+    <ResponseField name="last_updated_at_timestamp" type="u64">
+      Unix timestamp of last order update
+    </ResponseField>
+    
+    <ResponseField name="requested_debt_amount" type="u64">
+      Original requested borrow amount
+    </ResponseField>
+    
+    <ResponseField name="max_borrow_rate_bps" type="u32">
+      Maximum borrow rate in basis points user is willing to pay
+    </ResponseField>
+    
+    <ResponseField name="active" type="u8">
+      Boolean flag indicating if order is active
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Key Health Metrics
+
+### Loan-to-Value (LTV)
+Calculated as: `borrow_factor_adjusted_debt_value / deposited_value`
+
+### Health Status
+- **Healthy**: LTV < allowed LTV (can borrow more)
+- **Unhealthy**: LTV >= liquidation threshold (liquidatable)
+- **Margin Call**: Marked for autodeleverage
+
+### Remaining Borrow Capacity
+Calculated as: `allowed_borrow_value - borrow_factor_adjusted_debt_value`
+
+## Constraints
+
+- Maximum 8 different collateral deposits
+- Maximum 5 different asset borrows
+- Maximum 2 obligation orders (limit orders)
+- Maximum 1 active borrow order
+
+## Account Size
+
+The `Obligation` account has a fixed size of 1784 bytes (`OBLIGATION_SIZE`).
+
+## Common Operations
+
+### Deposit Collateral
+Adds collateral to the deposits array, increasing `deposited_value_sf` and `allowed_borrow_value_sf`.
+
+### Borrow
+Adds or increases a borrow in the borrows array, increasing `borrowed_amount_sf` and `borrow_factor_adjusted_debt_value_sf`.
+
+### Repay
+Reduces borrowed amount, potentially removing the borrow entry if fully repaid.
+
+### Withdraw
+Removes collateral, potentially closing the deposit position if fully withdrawn.
+
+### Liquidate
+Liquidator repays part of debt and receives discounted collateral when position is unhealthy.

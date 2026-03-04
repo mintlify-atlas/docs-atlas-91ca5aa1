@@ -1,0 +1,431 @@
+---
+title: 'Reserves'
+description: 'Understanding reserve configuration, interest rate models, and liquidity management'
+---
+
+## What is a Reserve?
+
+A `Reserve` represents a single asset lending market within Kamino Lending. Each reserve manages:
+- **Liquidity**: The underlying asset being lent/borrowed (e.g., USDC, SOL)
+- **Collateral**: Receipt tokens (cTokens) representing deposits
+- **Configuration**: Interest rates, fees, and limits
+- **State**: Borrowed amounts, utilization, and interest accrual
+
+From `state/reserve.rs:61`:
+
+```rust
+pub struct Reserve {
+    pub version: u64,
+    pub last_update: LastUpdate,
+    pub lending_market: Pubkey,
+    
+    pub liquidity: ReserveLiquidity,
+    pub collateral: ReserveCollateral,
+    pub config: ReserveConfig,
+    
+    pub borrowed_amount_outside_elevation_group: u64,
+    pub borrowed_amounts_against_this_reserve_in_elevation_groups: [u64; 32],
+    pub withdraw_queue: WithdrawQueue,
+}
+```
+
+## Reserve Liquidity
+
+The `ReserveLiquidity` struct tracks the actual token supply and borrows (from `state/reserve.rs:782`):
+
+```rust
+pub struct ReserveLiquidity {
+    pub mint_pubkey: Pubkey,
+    pub supply_vault: Pubkey,
+    pub fee_vault: Pubkey,
+    
+    pub total_available_amount: u64,
+    pub borrowed_amount_sf: u128,  // Scaled fraction
+    
+    pub market_price_sf: u128,
+    pub market_price_last_updated_ts: u64,
+    pub mint_decimals: u64,
+    
+    pub cumulative_borrow_rate_bsf: BigFractionBytes,
+    pub accumulated_protocol_fees_sf: u128,
+    pub accumulated_referrer_fees_sf: u128,
+    
+    pub deposit_limit_crossed_timestamp: u64,
+    pub borrow_limit_crossed_timestamp: u64,
+}
+```
+
+### Key Liquidity Metrics
+
+**Total Supply** (from `state/reserve.rs:932`):
+```rust
+pub fn total_supply(&self) -> Fraction {
+    Fraction::from(self.total_available_amount) 
+        + Fraction::from_bits(self.borrowed_amount_sf)
+        - Fraction::from_bits(self.accumulated_protocol_fees_sf)
+        - Fraction::from_bits(self.accumulated_referrer_fees_sf)
+        - Fraction::from_bits(self.pending_referrer_fees_sf)
+}
+```
+
+**Utilization Rate** (from `state/reserve.rs:977`):
+```rust
+pub fn utilization_rate(&self) -> Fraction {
+    let total_supply = self.total_supply();
+    if total_supply == Fraction::ZERO {
+        return Fraction::ZERO;
+    }
+    Fraction::from_bits(self.borrowed_amount_sf) / total_supply
+}
+```
+
+**Available Liquidity**:
+- `total_available_amount`: Tokens in the supply vault
+- `freely_available_liquidity_amount()`: Available minus queued withdrawals
+
+## Reserve Collateral (cTokens)
+
+When users deposit liquidity, they receive collateral tokens (cTokens) that represent their share of the reserve.
+
+From `state/reserve.rs:1092`:
+
+```rust
+pub struct ReserveCollateral {
+    pub mint_pubkey: Pubkey,
+    pub mint_total_supply: u64,
+    pub supply_vault: Pubkey,
+}
+```
+
+### Collateral Exchange Rate
+
+The exchange rate between liquidity and collateral changes over time as interest accrues (from `state/reserve.rs:1146`):
+
+```rust
+fn exchange_rate(&self, total_liquidity: Fraction) -> CollateralExchangeRate {
+    if self.mint_total_supply == 0 || total_liquidity == Fraction::ZERO {
+        INITIAL_COLLATERAL_RATE  // 1:1 when reserve is new
+    } else {
+        CollateralExchangeRate::from_supply_and_liquidity(
+            self.mint_total_supply,
+            total_liquidity,
+        )
+    }
+}
+```
+
+**Conversion Functions** (from `state/reserve.rs:1185-1291`):
+- `collateral_to_liquidity()`: Convert cTokens to underlying tokens
+- `liquidity_to_collateral()`: Convert underlying tokens to cTokens
+- Ceiling and floor variants for precise accounting
+
+### cToken Model Benefits
+
+1. **Automatic Yield**: cToken value increases relative to underlying as interest accrues
+2. **Composability**: cTokens can be used in other DeFi protocols
+3. **Gas Efficiency**: No need to track individual deposit shares
+4. **Precision**: Exchange rate uses scaled fractions for accuracy
+
+## Reserve Configuration
+
+The `ReserveConfig` struct defines all operational parameters (from `state/reserve.rs:1313`):
+
+```rust
+pub struct ReserveConfig {
+    pub status: u8,  // Active, Obsolete, Hidden
+    
+    // Interest rate parameters
+    pub borrow_rate_curve: BorrowRateCurve,
+    pub host_fixed_interest_rate_bps: u16,
+    
+    // Risk parameters
+    pub loan_to_value_pct: u8,
+    pub liquidation_threshold_pct: u8,
+    pub borrow_factor_pct: u64,
+    
+    // Fees
+    pub protocol_take_rate_pct: u8,
+    pub protocol_liquidation_fee_pct: u8,
+    pub fees: ReserveFees,
+    
+    // Limits
+    pub deposit_limit: u64,
+    pub borrow_limit: u64,
+    pub borrow_limit_outside_elevation_group: u64,
+    
+    // Liquidation parameters
+    pub min_liquidation_bonus_bps: u16,
+    pub max_liquidation_bonus_bps: u16,
+    pub bad_debt_liquidation_bonus_bps: u16,
+    
+    // Advanced features
+    pub token_info: TokenInfo,
+    pub elevation_groups: [u8; 20],
+    pub debt_maturity_timestamp: u64,
+    pub debt_term_seconds: u64,
+}
+```
+
+### Reserve Fees
+
+From `state/reserve.rs:1537`:
+
+```rust
+pub struct ReserveFees {
+    pub origination_fee_sf: u64,    // Fee on borrows (scaled fraction)
+    pub flash_loan_fee_sf: u64,     // Fee on flash loans
+}
+```
+
+Fee calculation supports both exclusive (added on top) and inclusive (deducted from amount) modes.
+
+## Interest Rate Model
+
+Kamino uses a piecewise linear borrow rate curve that adjusts rates based on utilization.
+
+### BorrowRateCurve
+
+From `utils/borrow_rate_curve.rs:21`:
+
+```rust
+pub struct BorrowRateCurve {
+    pub points: [CurvePoint; 11],
+}
+
+pub struct CurvePoint {
+    pub utilization_rate_bps: u32,  // 0 to 10000 (0% to 100%)
+    pub borrow_rate_bps: u32,       // Interest rate in basis points
+}
+```
+
+### Rate Calculation
+
+The borrow rate is calculated by finding the curve segment containing the current utilization rate, then interpolating linearly (from `state/reserve.rs:160`):
+
+```rust
+pub fn current_borrow_rate(&self) -> Result<Fraction> {
+    let utilization_rate = self.liquidity.utilization_rate();
+    self.config.borrow_rate_curve.get_borrow_rate(utilization_rate)
+}
+```
+
+**Example Curve**:
+```
+Utilization | Borrow Rate
+    0%      |    2%
+   50%      |    5%
+   80%      |   10%
+   90%      |   20%
+  100%      |   50%
+```
+
+As utilization increases, rates rise to incentivize deposits and discourage excessive borrowing.
+
+### Interest Accrual
+
+Interest compounds continuously based on elapsed Solana slots (from `state/reserve.rs:998`):
+
+```rust
+fn compound_interest(
+    &mut self,
+    current_borrow_rate: Fraction,
+    host_fixed_interest_rate: Fraction,
+    slots_elapsed: u64,
+    protocol_take_rate: Fraction,
+    referral_rate: Fraction,
+) -> LendingResult<()> {
+    let compounded_interest_rate = approximate_compounded_interest(
+        current_borrow_rate + host_fixed_interest_rate,
+        slots_elapsed,
+    );
+    
+    let new_cumulative_borrow_rate = 
+        previous_cumulative_borrow_rate * compounded_interest_rate;
+    
+    let new_debt = previous_debt * compounded_interest_rate;
+    
+    // Split interest between:
+    // - Protocol fees
+    // - Referral fees  
+    // - Lender yield
+}
+```
+
+**Compounding Formula**:
+```
+APY = (1 + rate_per_slot)^slots_per_year - 1
+```
+
+With ~2.5 slots per second, there are approximately 78,840,000 slots per year.
+
+## Deposit and Borrow Limits
+
+### Deposit Limits
+
+From `state/reserve.rs:692`:
+
+```rust
+pub fn deposit_limit_crossed(&self) -> bool {
+    self.liquidity.total_supply() > Fraction::from(self.config.deposit_limit)
+}
+```
+
+When crossed:
+- Timestamp is recorded
+- New deposits may be restricted based on market configuration
+- Prevents excessive concentration in a single asset
+
+### Borrow Limits
+
+From `state/reserve.rs:697`:
+
+```rust
+pub fn borrow_limit_crossed(&self) -> bool {
+    self.liquidity.total_borrow() > Fraction::from(self.config.borrow_limit)
+}
+```
+
+Multiple borrow limits:
+- `borrow_limit`: Total borrow cap for the reserve
+- `borrow_limit_outside_elevation_group`: Cap for non-isolated borrows
+- `borrow_limit_against_this_collateral_in_elevation_group[32]`: Per-group caps
+
+## Withdraw Queue
+
+For reserves with limited liquidity, a withdraw queue manages redemptions (from `state/reserve.rs:834`):
+
+```rust
+pub struct WithdrawQueue {
+    pub queued_collateral_amount: u64,
+    pub next_issued_ticket_sequence_number: u64,
+    pub next_withdrawable_ticket_sequence_number: u64,
+}
+```
+
+Users receive withdraw tickets that can be redeemed when liquidity becomes available.
+
+## Borrow Factor
+
+The borrow factor adjusts the debt value for risk management (from `state/reserve.rs:1430`):
+
+```rust
+pub fn get_borrow_factor(&self) -> Fraction {
+    max(
+        Fraction::ONE,
+        Fraction::from_percent(self.borrow_factor_pct),
+    )
+}
+```
+
+A borrow factor > 100% means the debt counts more toward LTV calculations, creating a buffer against volatility.
+
+**Example**: 
+- User borrows $100 of Asset A with 120% borrow factor
+- Debt counts as $120 for LTV calculations
+- Provides extra safety margin before liquidation
+
+## Reserve Status
+
+From `state/reserve.rs:1502`:
+
+```rust
+pub enum ReserveStatus {
+    Active = 0,      // Normal operations
+    Obsolete = 1,    // Deprecated, withdrawals only
+    Hidden = 2,      // Not shown in UI
+}
+```
+
+## Key Reserve Functions
+
+### Depositing Liquidity
+
+```rust
+pub fn deposit_liquidity(
+    &mut self,
+    liquidity_amount: u64,
+    collateral_amount: u64,
+) -> Result<()> {
+    self.liquidity.deposit(liquidity_amount)?;
+    self.collateral.mint(collateral_amount)?;
+    Ok(())
+}
+```
+
+### Borrowing
+
+```rust
+pub fn borrow(
+    &mut self, 
+    borrow_f: Fraction, 
+    use_withdraw_queue: bool
+) -> Result<()> {
+    if use_withdraw_queue {
+        self.withdraw_including_queued(borrow_f.to_floor())?;
+    } else {
+        self.withdraw_freely_available(borrow_f.to_floor())?;
+    }
+    
+    let borrowed_amount_f = self.liquidity.total_borrow();
+    self.liquidity.borrowed_amount_sf = (borrowed_amount_f + borrow_f).to_bits();
+    Ok(())
+}
+```
+
+### Redeeming Collateral
+
+```rust
+pub fn redeem_collateral(
+    &mut self,
+    collateral_amount: u64,
+    use_withdraw_queue: bool,
+) -> Result<u64> {
+    let liquidity_amount = self.collateral_exchange_rate()
+        .collateral_to_liquidity(collateral_amount);
+    
+    if use_withdraw_queue {
+        self.withdraw_including_queued(liquidity_amount)?;
+    } else {
+        self.withdraw_freely_available(liquidity_amount)?;
+    }
+    
+    self.collateral.burn(collateral_amount)?;
+    Ok(liquidity_amount)
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Setting Interest Rate Curves">
+    - Start with lower rates to encourage borrowing
+    - Increase rates sharply at high utilization (>80%) to maintain liquidity
+    - Leave headroom for flash loan spikes
+    - Monitor utilization and adjust curves over time
+  </Accordion>
+  
+  <Accordion title="Configuring Limits">
+    - Set deposit limits based on oracle quality and liquidity
+    - Borrow limits should account for liquidation capacity
+    - Use elevation groups for higher-risk assets
+    - Review limits during volatile market conditions
+  </Accordion>
+  
+  <Accordion title="Managing Fees">
+    - Origination fees should cover gas costs for liquidations
+    - Protocol take rate typically 10-20% of interest earned
+    - Flash loan fees should be competitive but profitable
+    - Consider referral fees to incentivize protocol growth
+  </Accordion>
+</AccordionGroup>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Obligations" icon="scale-balanced" href="/concepts/obligations">
+    Learn how user positions interact with reserves
+  </Card>
+  <Card title="Collateral & Liquidity" icon="chart-line" href="/concepts/collateral-and-liquidity">
+    Understand LTV ratios and liquidation mechanics
+  </Card>
+</CardGroup>

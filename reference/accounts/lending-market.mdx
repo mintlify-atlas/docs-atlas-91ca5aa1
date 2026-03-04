@@ -1,0 +1,191 @@
+---
+title: LendingMarket
+description: Core market account for Kamino Lending protocol
+---
+
+The `LendingMarket` account is the central configuration account for a Kamino lending market. It defines global parameters, emergency controls, liquidation settings, elevation groups, and fee structures.
+
+## LendingMarket
+
+<ResponseField name="version" type="u64">
+  Program version number used to track protocol upgrades
+</ResponseField>
+
+<ResponseField name="bump_seed" type="u64">
+  PDA bump seed for the lending market account
+</ResponseField>
+
+<ResponseField name="lending_market_owner" type="Pubkey">
+  Authority that can update lending market configuration
+</ResponseField>
+
+<ResponseField name="lending_market_owner_cached" type="Pubkey">
+  Cached copy of the lending market owner for validation
+</ResponseField>
+
+<ResponseField name="quote_currency" type="[u8; 32]">
+  Quote currency identifier (e.g., "USD") used for pricing across the market
+</ResponseField>
+
+<ResponseField name="referral_fee_bps" type="u16">
+  Referral fee in basis points (1 bps = 0.01%)
+</ResponseField>
+
+<ResponseField name="emergency_mode" type="u8">
+  Boolean flag (0 or 1) indicating if the market is in emergency mode, which disables most operations
+</ResponseField>
+
+<ResponseField name="autodeleverage_enabled" type="u8">
+  Boolean flag enabling automatic deleveraging of unhealthy positions
+</ResponseField>
+
+<ResponseField name="borrow_disabled" type="u8">
+  Boolean flag that disables all borrowing operations when set
+</ResponseField>
+
+<ResponseField name="price_refresh_trigger_to_max_age_pct" type="u8">
+  Percentage threshold for triggering price refresh relative to max age
+</ResponseField>
+
+<ResponseField name="liquidation_max_debt_close_factor_pct" type="u8">
+  Maximum percentage of debt that can be closed in a single liquidation (e.g., 50 = 50%)
+</ResponseField>
+
+<ResponseField name="insolvency_risk_unhealthy_ltv_pct" type="u8">
+  LTV percentage threshold at which a position is considered at risk of insolvency
+</ResponseField>
+
+<ResponseField name="min_full_liquidation_value_threshold" type="u64">
+  Minimum USD value below which a position can be fully liquidated regardless of close factor
+</ResponseField>
+
+<ResponseField name="max_liquidatable_debt_market_value_at_once" type="u64">
+  Maximum USD value of debt that can be liquidated in a single transaction
+</ResponseField>
+
+<ResponseField name="global_allowed_borrow_value" type="u64">
+  Global limit on total borrow value across all reserves in the market (in USD)
+</ResponseField>
+
+<ResponseField name="emergency_council" type="Pubkey">
+  Authority that can trigger emergency mode and other emergency actions
+</ResponseField>
+
+<ResponseField name="elevation_groups" type="ElevationGroup[32]">
+  Array of elevation group configurations for isolated lending pools
+  
+  <Expandable title="ElevationGroup fields">
+    <ResponseField name="max_liquidation_bonus_bps" type="u16">
+      Maximum liquidation bonus in basis points for this elevation group
+    </ResponseField>
+    
+    <ResponseField name="id" type="u8">
+      Unique identifier for the elevation group (1-32, 0 reserved for no group)
+    </ResponseField>
+    
+    <ResponseField name="ltv_pct" type="u8">
+      Loan-to-value percentage allowed for borrows in this group
+    </ResponseField>
+    
+    <ResponseField name="liquidation_threshold_pct" type="u8">
+      LTV percentage at which positions become liquidatable
+    </ResponseField>
+    
+    <ResponseField name="allow_new_loans" type="u8">
+      Boolean flag controlling whether new loans are allowed in this group
+    </ResponseField>
+    
+    <ResponseField name="max_reserves_as_collateral" type="u8">
+      Maximum number of reserves that can be used as collateral simultaneously
+    </ResponseField>
+    
+    <ResponseField name="debt_reserve" type="Pubkey">
+      Reserve that can be borrowed against in this elevation group
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="min_net_value_in_obligation_sf" type="u128">
+  Minimum net value required in an obligation (scaled fraction format)
+</ResponseField>
+
+<ResponseField name="min_value_skip_liquidation_ltv_checks" type="u64">
+  Minimum obligation value below which LTV checks are skipped during liquidation
+</ResponseField>
+
+<ResponseField name="name" type="[u8; 32]">
+  Human-readable name for the lending market
+</ResponseField>
+
+<ResponseField name="min_value_skip_liquidation_bf_checks" type="u64">
+  Minimum obligation value below which borrow factor checks are skipped during liquidation
+</ResponseField>
+
+<ResponseField name="individual_autodeleverage_margin_call_period_secs" type="u64">
+  Time period in seconds for individual autodeleverage margin calls
+</ResponseField>
+
+<ResponseField name="min_initial_deposit_amount" type="u64">
+  Minimum amount required for initial deposit into a reserve
+</ResponseField>
+
+<ResponseField name="obligation_order_execution_enabled" type="u8">
+  Boolean flag enabling execution of obligation limit orders
+</ResponseField>
+
+<ResponseField name="immutable" type="u8">
+  Boolean flag preventing any further configuration changes when set
+</ResponseField>
+
+<ResponseField name="obligation_order_creation_enabled" type="u8">
+  Boolean flag enabling creation of new obligation limit orders
+</ResponseField>
+
+<ResponseField name="price_triggered_liquidation_disabled" type="u8">
+  Boolean flag disabling liquidations triggered by price movements
+</ResponseField>
+
+<ResponseField name="mature_reserve_debt_liquidation_enabled" type="u8">
+  Boolean flag enabling liquidation of mature debt reserves
+</ResponseField>
+
+<ResponseField name="obligation_borrow_debt_term_liquidation_enabled" type="u8">
+  Boolean flag enabling liquidation based on debt term expiration
+</ResponseField>
+
+<ResponseField name="borrow_order_creation_enabled" type="u8">
+  Boolean flag enabling creation of borrow limit orders
+</ResponseField>
+
+<ResponseField name="borrow_order_execution_enabled" type="u8">
+  Boolean flag enabling execution of borrow limit orders
+</ResponseField>
+
+<ResponseField name="proposer_authority" type="Pubkey">
+  Authority that can propose configuration changes
+</ResponseField>
+
+<ResponseField name="min_borrow_order_fill_value" type="u64">
+  Minimum USD value required to fill a borrow order
+</ResponseField>
+
+<ResponseField name="withdraw_ticket_issuance_enabled" type="u8">
+  Boolean flag enabling issuance of withdraw tickets for queued withdrawals
+</ResponseField>
+
+<ResponseField name="withdraw_ticket_redemption_enabled" type="u8">
+  Boolean flag enabling redemption of withdraw tickets
+</ResponseField>
+
+<ResponseField name="min_withdraw_queued_liquidity_value" type="u64">
+  Minimum USD value of liquidity required to process queued withdrawals
+</ResponseField>
+
+## Account Size
+
+The `LendingMarket` account has a fixed size defined by `LENDING_MARKET_SIZE` constant in the program.
+
+## Related Types
+
+- **ElevationGroup**: Configuration for isolated lending pools with custom risk parameters
+- **InitLendingMarketParams**: Parameters used to initialize a new lending market

@@ -1,0 +1,85 @@
+---
+title: GlobalConfig
+description: Global protocol configuration account
+---
+
+The `GlobalConfig` account stores protocol-wide configuration settings that apply across all lending markets. It manages administrative authorities and fee collection.
+
+## GlobalConfig
+
+<ResponseField name="global_admin" type="Pubkey">
+  Current global administrator authority with full control over protocol configuration
+</ResponseField>
+
+<ResponseField name="pending_admin" type="Pubkey">
+  Pending administrator that can be promoted to global admin through a two-step process
+</ResponseField>
+
+<ResponseField name="fee_collector" type="Pubkey">
+  Account authorized to collect accumulated protocol fees across all markets
+</ResponseField>
+
+## Admin Update Process
+
+The GlobalConfig uses a two-step admin update process for security:
+
+1. **Propose**: Current admin sets `pending_admin` to the new authority
+2. **Accept**: The pending admin calls `apply_pending_admin()` to become the active admin
+
+This prevents accidental loss of admin access.
+
+## Update Modes
+
+Configuration updates are performed through the `UpdateGlobalConfigMode` enum:
+
+<ResponseField name="UpdateGlobalConfigMode" type="enum">
+  <Expandable title="Variants">
+    <ResponseField name="PendingAdmin" type="0">
+      Update the pending admin authority
+    </ResponseField>
+    
+    <ResponseField name="FeeCollector" type="1">
+      Update the fee collector authority
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Initialization
+
+When initialized, all three fields (`global_admin`, `pending_admin`, `fee_collector`) are set to the same initial admin authority.
+
+## Account Size
+
+The `GlobalConfig` account has a fixed size of 1000 bytes (`GLOBAL_CONFIG_SIZE`), including padding for future expansion.
+
+## Usage Example
+
+Typical admin rotation flow:
+
+```typescript
+// Step 1: Current admin proposes new admin
+await program.methods
+  .updateGlobalConfig(
+    { pendingAdmin: {} },
+    newAdminPubkey.toBuffer()
+  )
+  .accounts({ globalConfig, admin: currentAdmin })
+  .rpc();
+
+// Step 2: New admin accepts
+await program.methods
+  .applyPendingAdmin()
+  .accounts({ globalConfig, pendingAdmin: newAdmin })
+  .rpc();
+```
+
+## Security Considerations
+
+- The global admin has protocol-wide privileges and should be secured with a multisig or governance mechanism
+- The pending admin pattern prevents accidental admin lockout
+- Fee collector can be set to a separate account for operational security
+
+## Related Accounts
+
+- **LendingMarket**: Each market has its own `lending_market_owner` separate from global admin
+- **Reserve**: Fee collector can claim accumulated fees from reserves across all markets

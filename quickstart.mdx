@@ -1,80 +1,271 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Kamino Lending in minutes
 ---
 
-## Get started in three steps
+# Quickstart
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through setting up your development environment and making your first interaction with the Kamino Lending protocol on Solana.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+Before you begin, ensure you have:
+
+- Node.js 16+ installed
+- Solana CLI tools installed
+- A Solana wallet with devnet SOL for testing
+- Basic familiarity with Solana and Anchor
+
+## Installation
+
+<Steps>
+  <Step title="Install Anchor CLI">
+    Kamino Lending is built with Anchor 0.29.0. Install the Anchor CLI:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    cargo install --git https://github.com/coral-xyz/anchor --tag v0.29.0 anchor-cli
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    Verify the installation:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    anchor --version
+    # Should output: anchor-cli 0.29.0
+    ```
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Set up your project">
+    Create a new project and install dependencies:
+    
+    ```bash
+    mkdir my-klend-integration
+    cd my-klend-integration
+    npm init -y
+    npm install @coral-xyz/anchor @solana/web3.js
+    ```
+    
+    <Note>
+    You'll also need the Kamino Lending IDL file to interact with the program. You can generate it from the source or obtain it from the Kamino Finance repository.
+    </Note>
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Configure your connection">
+    Create a file `config.ts` to set up your connection to the Kamino Lending program:
+    
+    ```typescript
+    import { Connection, PublicKey, clusterApiUrl } from '@solana/web3.js';
+    import { AnchorProvider, Program } from '@coral-xyz/anchor';
+    
+    // Kamino Lending program ID on devnet
+    export const KLEND_PROGRAM_ID = new PublicKey(
+      'KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD'
+    );
+    
+    // Connect to devnet
+    export const connection = new Connection(
+      clusterApiUrl('devnet'),
+      'confirmed'
+    );
+    
+    // Set up provider (you'll need to configure your wallet)
+    export function getProvider(wallet: any) {
+      return new AnchorProvider(
+        connection,
+        wallet,
+        { commitment: 'confirmed' }
+      );
+    }
+    ```
+  </Step>
 
-### Step 3: Go live
+  <Step title="Initialize an obligation">
+    An obligation tracks a user's deposits and borrows. Here's how to create one:
+    
+    ```typescript
+    import { PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
+    import { Program } from '@coral-xyz/anchor';
+    import { KLEND_PROGRAM_ID } from './config';
+    
+    async function initializeObligation(
+      program: Program,
+      lendingMarket: PublicKey,
+      obligationOwner: Keypair,
+      userMetadata: PublicKey
+    ) {
+      // Generate a unique ID for this obligation
+      const obligationId = 0;
+      const tag = 0; // Tag 0 = no specific seed requirements
+      
+      // Derive the obligation PDA
+      const [obligationPubkey] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from([tag]),
+          Buffer.from([obligationId]),
+          obligationOwner.publicKey.toBuffer(),
+          lendingMarket.toBuffer(),
+          PublicKey.default.toBuffer(), // seed1_account for tag 0
+          PublicKey.default.toBuffer(), // seed2_account for tag 0
+        ],
+        KLEND_PROGRAM_ID
+      );
+      
+      // Initialize the obligation
+      const tx = await program.methods
+        .initObligation({
+          tag,
+          id: obligationId,
+        })
+        .accounts({
+          obligationOwner: obligationOwner.publicKey,
+          feePayer: obligationOwner.publicKey,
+          obligation: obligationPubkey,
+          lendingMarket,
+          seed1Account: PublicKey.default,
+          seed2Account: PublicKey.default,
+          ownerUserMetadata: userMetadata,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([obligationOwner])
+        .rpc();
+      
+      console.log('Obligation initialized:', obligationPubkey.toString());
+      console.log('Transaction signature:', tx);
+      
+      return obligationPubkey;
+    }
+    ```
+    
+    <Info>
+    The `initObligation` instruction is defined at `src/lib.rs:135`. It requires a `UserMetadata` account to track referrals.
+    </Info>
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Deposit liquidity to a reserve">
+    Once you have an obligation, you can deposit assets into reserves:
+    
+    ```typescript
+    import { PublicKey } from '@solana/web3.js';
+    import { TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '@solana/spl-token';
+    
+    async function depositReserveLiquidity(
+      program: Program,
+      reserve: PublicKey,
+      lendingMarket: PublicKey,
+      user: Keypair,
+      amount: number
+    ) {
+      const reserveData = await program.account.reserve.fetch(reserve);
+      
+      // Get user token accounts
+      const userSourceLiquidity = await getAssociatedTokenAddress(
+        reserveData.liquidity.mintPubkey,
+        user.publicKey
+      );
+      
+      const userDestinationCollateral = await getAssociatedTokenAddress(
+        reserveData.collateral.mintPubkey,
+        user.publicKey
+      );
+      
+      // Derive lending market authority
+      const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from('lma'), lendingMarket.toBuffer()],
+        KLEND_PROGRAM_ID
+      );
+      
+      // Deposit liquidity
+      const tx = await program.methods
+        .depositReserveLiquidity(amount)
+        .accounts({
+          owner: user.publicKey,
+          reserve,
+          lendingMarket,
+          lendingMarketAuthority,
+          reserveLiquidityMint: reserveData.liquidity.mintPubkey,
+          reserveLiquiditySupply: reserveData.liquidity.supplyVault,
+          reserveCollateralMint: reserveData.collateral.mintPubkey,
+          userSourceLiquidity,
+          userDestinationCollateral,
+          liquidityTokenProgram: TOKEN_PROGRAM_ID,
+          collateralTokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user])
+        .rpc();
+      
+      console.log('Liquidity deposited successfully');
+      console.log('Transaction signature:', tx);
+    }
+    ```
+    
+    <Warning>
+    The `depositReserveLiquidity` instruction is disabled when the lending market is in emergency mode. The instruction is defined at `src/lib.rs:120`.
+    </Warning>
+  </Step>
+
+  <Step title="Query account data">
+    Read on-chain data to monitor positions and market state:
+    
+    ```typescript
+    async function getObligationHealth(
+      program: Program,
+      obligation: PublicKey
+    ) {
+      const obligationData = await program.account.obligation.fetch(obligation);
+      
+      // Convert scale factors to human-readable values
+      const depositedValue = obligationData.depositedValueSf;
+      const borrowedValue = obligationData.borrowedAssetsMarketValueSf;
+      const allowedBorrowValue = obligationData.allowedBorrowValueSf;
+      
+      console.log('Obligation Health:');
+      console.log('  Deposited Value:', depositedValue.toString());
+      console.log('  Borrowed Value:', borrowedValue.toString());
+      console.log('  Allowed Borrow Value:', allowedBorrowValue.toString());
+      console.log('  Active Deposits:', obligationData.deposits.filter(
+        d => d.depositedAmount > 0
+      ).length);
+      console.log('  Active Borrows:', obligationData.borrows.filter(
+        b => b.borrowedAmountSf > 0
+      ).length);
+      
+      return obligationData;
+    }
+    ```
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you've successfully interacted with Kamino Lending, explore more advanced features:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Borrowing" icon="hand-holding-dollar" href="/integration/borrow-repay">
+    Learn how to borrow assets against collateral
+  </Card>
+  
+  <Card title="Flash loans" icon="bolt" href="/advanced/flash-loans">
+    Execute uncollateralized flash loan strategies
+  </Card>
+  
+  <Card title="Liquidations" icon="shield-halved" href="/integration/liquidations">
+    Participate in protocol liquidations
+  </Card>
+  
+  <Card title="Program Reference" icon="code" href="/reference/instructions/overview">
+    Explore all program instructions
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Common program IDs
+
+Keep these addresses handy when building your integration:
+
+| Network | Program ID |
+|---------|------------|
+| Mainnet | `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD` |
+| Staging | `SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh` |
+| Devnet  | `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD` |
+
+<Tip>
+For production deployments, always verify the program ID and test thoroughly on devnet first.
+</Tip>

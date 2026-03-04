@@ -1,0 +1,646 @@
+---
+title: "Borrow & Repay"
+description: "Borrow liquidity against collateral and manage repayments in Kamino Lending"
+---
+
+## Overview
+
+To borrow from Kamino Lending, you must:
+1. Initialize an obligation account
+2. Deposit collateral into the obligation
+3. Ensure your health factor remains above liquidation threshold
+4. Refresh your obligation before borrowing or repaying
+
+## Initialize Obligation
+
+Create an obligation account to track your borrows and collateral.
+
+### Instruction: `init_obligation`
+
+<CodeGroup>
+```rust handler_init_obligation.rs
+pub fn process(ctx: Context<InitObligation>, args: InitObligationArgs) -> Result<()> {
+    let clock = &Clock::get()?;
+    
+    // Verify obligation seeds (different tag types for different use cases)
+    check_obligation_seeds(
+        args.tag,
+        &ctx.accounts.seed1_account,
+        &ctx.accounts.seed2_account,
+    ).unwrap();
+    
+    let obligation = &mut ctx.accounts.obligation.load_init()?;
+    let owner_user_metadata = &ctx.accounts.owner_user_metadata.load()?;
+    
+    // Initialize obligation with default state
+    obligation.init(crate::state::obligation::InitObligationParams {
+        current_slot: clock.slot,
+        lending_market: ctx.accounts.lending_market.key(),
+        owner: ctx.accounts.obligation_owner.key(),
+        deposits: [ObligationCollateral::default(); 8], // Max 8 collateral types
+        borrows: [ObligationLiquidity::default(); 5],   // Max 5 borrow types
+        tag: args.tag as u64,
+        referrer: owner_user_metadata.referrer,
+    });
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+
+async function initObligation(
+  program: Program,
+  owner: Keypair,
+  lendingMarket: PublicKey,
+  userMetadata: PublicKey
+) {
+  // Generate unique obligation PDA
+  const tag = 0; // 0 = default, 1 = multi-mint, 2 = single-mint, 3 = leveraged
+  const id = 0;
+  const seed1 = PublicKey.default;
+  const seed2 = PublicKey.default;
+  
+  const [obligation, bump] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from([tag]),
+      Buffer.from([id]),
+      owner.publicKey.toBuffer(),
+      lendingMarket.toBuffer(),
+      seed1.toBuffer(),
+      seed2.toBuffer(),
+    ],
+    program.programId
+  );
+  
+  await program.methods
+    .initObligation({ tag, id })
+    .accounts({
+      obligationOwner: owner.publicKey,
+      feePayer: owner.publicKey,
+      obligation: obligation,
+      lendingMarket: lendingMarket,
+      seed1Account: seed1,
+      seed2Account: seed2,
+      ownerUserMetadata: userMetadata,
+      rent: SYSVAR_RENT_PUBKEY,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers([owner])
+    .rpc();
+  
+  return obligation;
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+#[instruction(args: InitObligationArgs)]
+pub struct InitObligation<'info> {
+    pub obligation_owner: Signer<'info>,
+    
+    #[account(mut)]
+    pub fee_payer: Signer<'info>,
+    
+    #[account(
+        init,
+        seeds = [
+            &[args.tag],
+            &[args.id],
+            obligation_owner.key().as_ref(),
+            lending_market.key().as_ref(),
+            seed1_account.key().as_ref(),
+            seed2_account.key().as_ref()
+        ],
+        bump,
+        payer = fee_payer,
+        space = OBLIGATION_SIZE + 8,
+    )]
+    pub obligation: AccountLoader<'info, Obligation>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    pub seed1_account: AccountInfo<'info>,
+    pub seed2_account: AccountInfo<'info>,
+    
+    #[account(
+        seeds = [BASE_SEED_USER_METADATA, obligation_owner.key().as_ref()],
+        bump = owner_user_metadata.load()?.bump.try_into().unwrap(),
+    )]
+    pub owner_user_metadata: AccountLoader<'info, UserMetadata>,
+    
+    pub rent: Sysvar<'info, Rent>,
+    pub system_program: Program<'info, System>,
+}
+```
+
+## Refresh Obligation
+
+**CRITICAL**: Always refresh the obligation before borrowing or repaying to ensure accurate health calculations.
+
+### Instruction: `refresh_obligation`
+
+<CodeGroup>
+```rust handler_refresh_obligation.rs
+pub fn process(ctx: Context<RefreshObligation>) -> Result<()> {
+    let obligation = &mut ctx.accounts.obligation.load_mut()?;
+    let clock = &Clock::get()?;
+    let lending_market = &ctx.accounts.lending_market.load()?;
+    
+    let borrow_count = obligation.active_borrows_count();
+    let deposit_count = obligation.active_deposits_count();
+    let reserves_count = borrow_count + deposit_count;
+    
+    // Remaining accounts must include:
+    // - All deposit reserves (first)
+    // - All borrow reserves (second)
+    // - Referrer token states if referrer exists (last)
+    let expected_remaining_accounts = if obligation.has_referrer() {
+        reserves_count + borrow_count
+    } else {
+        reserves_count
+    };
+    
+    require!(
+        ctx.remaining_accounts.len() == expected_remaining_accounts,
+        LendingError::InvalidAccountInput
+    );
+    
+    let deposit_reserves_iter = ctx.remaining_accounts
+        .iter()
+        .take(deposit_count)
+        .map(|ai| FatAccountLoader::<Reserve>::try_from(ai).unwrap());
+    
+    let borrow_reserves_iter = ctx.remaining_accounts
+        .iter()
+        .skip(deposit_count)
+        .take(borrow_count)
+        .map(|ai| FatAccountLoader::<Reserve>::try_from(ai).unwrap());
+    
+    let referrer_token_states_iter = ctx.remaining_accounts
+        .iter()
+        .skip(reserves_count)
+        .map(|ai| FatAccountLoader::<ReferrerTokenState>::try_from(ai).unwrap());
+    
+    lending_operations::refresh_obligation(
+        &crate::ID,
+        obligation,
+        lending_market,
+        clock,
+        deposit_reserves_iter,
+        borrow_reserves_iter,
+        referrer_token_states_iter,
+    )?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function refreshObligation(
+  program: Program,
+  obligation: PublicKey,
+  lendingMarket: PublicKey
+) {
+  const obligationData = await program.account.obligation.fetch(obligation);
+  
+  // Collect all deposit reserve accounts
+  const depositReserves = obligationData.deposits
+    .filter(d => d.depositedAmount.gt(new BN(0)))
+    .map(d => d.depositReserve);
+  
+  // Collect all borrow reserve accounts
+  const borrowReserves = obligationData.borrows
+    .filter(b => b.borrowedAmountSf.gt(new BN(0)))
+    .map(b => b.borrowReserve);
+  
+  // Add remaining accounts in order: deposits, borrows, then referrer states
+  const remainingAccounts = [
+    ...depositReserves.map(pubkey => ({ pubkey, isSigner: false, isWritable: false })),
+    ...borrowReserves.map(pubkey => ({ pubkey, isSigner: false, isWritable: false })),
+  ];
+  
+  await program.methods
+    .refreshObligation()
+    .accounts({
+      lendingMarket: lendingMarket,
+      obligation: obligation,
+    })
+    .remainingAccounts(remainingAccounts)
+    .rpc();
+}
+```
+</CodeGroup>
+
+## Borrow Obligation Liquidity
+
+Borrow tokens against your deposited collateral.
+
+### Instruction: `borrow_obligation_liquidity_v2`
+
+<CodeGroup>
+```rust handler_borrow_obligation_liquidity.rs
+pub fn borrow_obligation_liquidity_process_impl<'info>(
+    accounts: &BorrowObligationLiquidity<'info>,
+    remaining_accounts: &[AccountInfo<'info>],
+    borrow_size: BorrowSize,
+) -> Result<u64> {
+    lending_checks::borrow_obligation_liquidity_checks(accounts)?;
+    
+    let borrow_reserve = &mut accounts.borrow_reserve.load_mut()?;
+    let lending_market = &accounts.lending_market.load()?;
+    let obligation = &mut accounts.obligation.load_mut()?;
+    let clock = &Clock::get()?;
+    
+    // Get all deposit reserves for health check
+    let deposit_reserves_iter = remaining_accounts
+        .iter()
+        .map(|ai| FatAccountLoader::<Reserve>::try_from(ai).unwrap());
+    
+    // Calculate borrow with origination fees
+    let CalculateBorrowResult {
+        receive_amount,
+        origination_fee,
+        ..
+    } = lending_operations::borrow_obligation_liquidity(
+        lending_market,
+        borrow_reserve,
+        obligation,
+        borrow_size,
+        clock,
+        accounts.borrow_reserve.key(),
+        referrer_token_state_option,
+        deposit_reserves_iter,
+    )?;
+    
+    // Transfer origination fee to fee receiver
+    if origination_fee > 0 {
+        token_transfer::send_origination_fees_transfer(
+            // Transfers origination_fee from reserve to fee_receiver
+        )?;
+    }
+    
+    // Transfer borrowed amount to user
+    let lending_market_key = accounts.lending_market.key();
+    let authority_signer_seeds = gen_signer_seeds!(
+        lending_market_key.as_ref(),
+        lending_market.bump_seed as u8
+    );
+    
+    token_transfer::borrow_obligation_liquidity_transfer(
+        accounts.token_program.to_account_info(),
+        accounts.borrow_reserve_liquidity_mint.to_account_info(),
+        accounts.reserve_source_liquidity.to_account_info(),
+        accounts.user_destination_liquidity.to_account_info(),
+        accounts.lending_market_authority.to_account_info(),
+        authority_signer_seeds,
+        receive_amount,
+        accounts.borrow_reserve_liquidity_mint.decimals,
+    )?;
+    
+    Ok(receive_amount)
+}
+```
+
+```typescript TypeScript Client
+async function borrowObligationLiquidity(
+  program: Program,
+  user: Keypair,
+  obligation: PublicKey,
+  borrowReserve: PublicKey,
+  lendingMarket: PublicKey,
+  amount: number
+) {
+  // IMPORTANT: Refresh obligation first!
+  await refreshObligation(program, obligation, lendingMarket);
+  
+  const reserveData = await program.account.reserve.fetch(borrowReserve);
+  const obligationData = await program.account.obligation.fetch(obligation);
+  
+  const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('lma'), lendingMarket.toBuffer()],
+    program.programId
+  );
+  
+  const userDestinationLiquidity = await getAssociatedTokenAddress(
+    reserveData.liquidity.mintPubkey,
+    user.publicKey
+  );
+  
+  // Collect deposit reserves for health calculation
+  const depositReserves = obligationData.deposits
+    .filter(d => d.depositedAmount.gt(new BN(0)))
+    .map(d => ({ pubkey: d.depositReserve, isSigner: false, isWritable: false }));
+  
+  await program.methods
+    .borrowObligationLiquidityV2(new BN(amount))
+    .accounts({
+      borrowAccounts: {
+        owner: user.publicKey,
+        obligation: obligation,
+        lendingMarket: lendingMarket,
+        lendingMarketAuthority: lendingMarketAuthority,
+        borrowReserve: borrowReserve,
+        borrowReserveLiquidityMint: reserveData.liquidity.mintPubkey,
+        reserveSourceLiquidity: reserveData.liquidity.supplyVault,
+        borrowReserveLiquidityFeeReceiver: reserveData.liquidity.feeVault,
+        userDestinationLiquidity: userDestinationLiquidity,
+        referrerTokenState: null, // Optional
+        tokenProgram: TOKEN_PROGRAM_ID,
+        instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+      },
+      // farms accounts (optional)
+    })
+    .remainingAccounts(depositReserves)
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+pub struct BorrowObligationLiquidity<'info> {
+    pub owner: Signer<'info>,
+    
+    #[account(
+        mut,
+        has_one = lending_market,
+        has_one = owner @ LendingError::InvalidObligationOwner
+    )]
+    pub obligation: AccountLoader<'info, Obligation>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    #[account(
+        seeds = [seeds::LENDING_MARKET_AUTH, lending_market.key().as_ref()],
+        bump = lending_market.load()?.bump_seed as u8,
+    )]
+    pub lending_market_authority: AccountInfo<'info>,
+    
+    #[account(mut, has_one = lending_market)]
+    pub borrow_reserve: AccountLoader<'info, Reserve>,
+    
+    #[account(
+        address = borrow_reserve.load()?.liquidity.mint_pubkey,
+        mint::token_program = token_program,
+    )]
+    pub borrow_reserve_liquidity_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(mut, address = borrow_reserve.load()?.liquidity.supply_vault)]
+    pub reserve_source_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut, address = borrow_reserve.load()?.liquidity.fee_vault)]
+    pub borrow_reserve_liquidity_fee_receiver: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(
+        mut,
+        token::mint = reserve_source_liquidity.mint,
+        token::authority = owner,
+    )]
+    pub user_destination_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut)]
+    pub referrer_token_state: Option<AccountLoader<'info, ReferrerTokenState>>,
+    
+    pub token_program: Interface<'info, TokenInterface>,
+    
+    #[account(address = SysInstructions::id())]
+    pub instruction_sysvar_account: AccountInfo<'info>,
+}
+```
+
+## Repay Obligation Liquidity
+
+Repay borrowed tokens to reduce debt and improve health factor.
+
+### Instruction: `repay_obligation_liquidity_v2`
+
+<CodeGroup>
+```rust handler_repay_obligation_liquidity.rs
+pub(super) fn process_impl<'a, 'info>(
+    accounts: &RepayObligationLiquidity,
+    remaining_accounts: impl Iterator<Item = &'a AccountInfo<'info>>,
+    liquidity_amount: u64,
+) -> Result<()>
+where
+    'info: 'a,
+{
+    lending_checks::repay_obligation_liquidity_checks(accounts)?;
+    let clock = Clock::get()?;
+    
+    let repay_reserve = &mut accounts.repay_reserve.load_mut()?;
+    let obligation = &mut accounts.obligation.load_mut()?;
+    let lending_market = &accounts.lending_market.load()?;
+    
+    // Calculate actual repay amount (may be less if paying off full debt)
+    let repay_amount = lending_operations::repay_obligation_liquidity(
+        repay_reserve,
+        obligation,
+        &clock,
+        liquidity_amount,
+        accounts.repay_reserve.key(),
+        lending_market,
+        remaining_accounts.map(|a| {
+            FatAccountLoader::try_from(a).expect("Invalid deposit reserve")
+        }),
+    )?;
+    
+    // Transfer repayment from user to reserve
+    token_transfer::repay_obligation_liquidity_transfer(
+        accounts.token_program.to_account_info(),
+        accounts.reserve_liquidity_mint.to_account_info(),
+        accounts.user_source_liquidity.to_account_info(),
+        accounts.reserve_destination_liquidity.to_account_info(),
+        accounts.owner.to_account_info(),
+        repay_amount,
+        accounts.reserve_liquidity_mint.decimals,
+    )?;
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function repayObligationLiquidity(
+  program: Program,
+  user: Keypair,
+  obligation: PublicKey,
+  repayReserve: PublicKey,
+  lendingMarket: PublicKey,
+  amount: number // Use u64::MAX to repay full debt
+) {
+  // IMPORTANT: Refresh obligation first!
+  await refreshObligation(program, obligation, lendingMarket);
+  
+  const reserveData = await program.account.reserve.fetch(repayReserve);
+  const obligationData = await program.account.obligation.fetch(obligation);
+  
+  const userSourceLiquidity = await getAssociatedTokenAddress(
+    reserveData.liquidity.mintPubkey,
+    user.publicKey
+  );
+  
+  // Collect deposit reserves (required for health recalculation)
+  const depositReserves = obligationData.deposits
+    .filter(d => d.depositedAmount.gt(new BN(0)))
+    .map(d => ({ pubkey: d.depositReserve, isSigner: false, isWritable: false }));
+  
+  await program.methods
+    .repayObligationLiquidityV2(new BN(amount))
+    .accounts({
+      repayAccounts: {
+        owner: user.publicKey,
+        obligation: obligation,
+        lendingMarket: lendingMarket,
+        repayReserve: repayReserve,
+        reserveLiquidityMint: reserveData.liquidity.mintPubkey,
+        reserveDestinationLiquidity: reserveData.liquidity.supplyVault,
+        userSourceLiquidity: userSourceLiquidity,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+      },
+      // farms accounts and lending_market_authority
+    })
+    .remainingAccounts(depositReserves)
+    .signers([user])
+    .rpc();
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+pub struct RepayObligationLiquidity<'info> {
+    pub owner: Signer<'info>,
+    
+    #[account(
+        mut,
+        has_one = lending_market,
+        constraint = obligation.load()?.lending_market == repay_reserve.load()?.lending_market
+    )]
+    pub obligation: AccountLoader<'info, Obligation>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    #[account(mut, has_one = lending_market)]
+    pub repay_reserve: AccountLoader<'info, Reserve>,
+    
+    #[account(
+        address = repay_reserve.load()?.liquidity.mint_pubkey,
+        mint::token_program = token_program,
+    )]
+    pub reserve_liquidity_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(mut, address = repay_reserve.load()?.liquidity.supply_vault)]
+    pub reserve_destination_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut, token::mint = repay_reserve.load()?.liquidity.mint_pubkey)]
+    pub user_source_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    pub token_program: Interface<'info, TokenInterface>,
+    
+    #[account(
+        address = SysInstructions::id(),
+        constraint = ix_utils::no_restricted_programs_within_tx(&instruction_sysvar_account)?
+            @ LendingError::TransactionIncludesRestrictedPrograms
+    )]
+    pub instruction_sysvar_account: AccountInfo<'info>,
+}
+```
+
+## Health Factor & Collateral Requirements
+
+Your obligation must maintain a healthy loan-to-value (LTV) ratio:
+
+```typescript
+// Calculate obligation health
+function calculateHealth(obligation: Obligation, reserves: Reserve[]): number {
+  let totalBorrowValue = 0;
+  let totalCollateralValue = 0;
+  
+  // Sum borrow values
+  for (const borrow of obligation.borrows) {
+    if (borrow.borrowedAmountSf.gt(new BN(0))) {
+      const reserve = reserves.find(r => r.pubkey.equals(borrow.borrowReserve));
+      totalBorrowValue += borrow.borrowedAmountSf * reserve.price;
+    }
+  }
+  
+  // Sum collateral values (weighted by LTV)
+  for (const deposit of obligation.deposits) {
+    if (deposit.depositedAmount.gt(new BN(0))) {
+      const reserve = reserves.find(r => r.pubkey.equals(deposit.depositReserve));
+      totalCollateralValue += deposit.depositedAmount * reserve.price * reserve.config.loanToValuePct;
+    }
+  }
+  
+  // Health factor: collateral / borrows
+  // < 1.0 = unhealthy (liquidatable)
+  // >= 1.0 = healthy
+  return totalCollateralValue / totalBorrowValue;
+}
+```
+
+## Complete Borrow Flow
+
+<Steps>
+  <Step title="Initialize Obligation">
+    Create obligation account if you don't have one
+  </Step>
+  
+  <Step title="Deposit Collateral">
+    Deposit cTokens into your obligation using `deposit_obligation_collateral_v2`
+  </Step>
+  
+  <Step title="Refresh Obligation">
+    Call `refresh_obligation` to update prices and accrued interest
+  </Step>
+  
+  <Step title="Borrow">
+    Call `borrow_obligation_liquidity_v2` with desired amount
+  </Step>
+  
+  <Step title="Monitor Health">
+    Regularly check your health factor to avoid liquidation
+  </Step>
+  
+  <Step title="Repay When Ready">
+    Call `repay_obligation_liquidity_v2` to reduce debt
+  </Step>
+</Steps>
+
+## Error Handling
+
+```typescript
+try {
+  await borrowObligationLiquidity(/* ... */);
+} catch (error) {
+  if (error.message.includes('BorrowTooLarge')) {
+    console.error('Borrow amount exceeds max LTV');
+  } else if (error.message.includes('ObligationCollateralEmpty')) {
+    console.error('No collateral deposited');
+  } else if (error.message.includes('InsufficientLiquidity')) {
+    console.error('Reserve has insufficient liquidity');
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Liquidations" icon="gavel" href="/integration/liquidations">
+    Learn about liquidation mechanics and building bots
+  </Card>
+  <Card title="Deposit & Withdraw" icon="arrow-right-arrow-left" href="/integration/deposit-withdraw">
+    Review collateral management
+  </Card>
+</CardGroup>

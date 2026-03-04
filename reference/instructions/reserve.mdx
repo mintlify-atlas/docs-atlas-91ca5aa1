@@ -1,0 +1,479 @@
+---
+title: "Reserve Instructions"
+description: "Instructions for managing reserves in a lending market"
+---
+
+## init_reserve
+
+Initialize a new reserve for a specific token in a lending market.
+
+### Signature
+
+```rust
+pub fn init_reserve<'info>(
+    ctx: Context<'_, '_, '_, 'info, InitReserve<'info>>
+) -> Result<()>
+```
+
+### Parameters
+
+None (all configuration done through accounts).
+
+### Accounts
+
+<ParamField path="signer" type="Signer" required>
+  Must be authorized to initialize reserves (market owner or admin).
+  - Must be mutable (pays for initialization)
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market this reserve belongs to.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+  - Seeds: `["lending_market_auth", lending_market.key()]`
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve account to initialize.
+  - Must be a zero-initialized account
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The SPL token mint for the reserve's liquidity.
+</ParamField>
+
+<ParamField path="reserve_liquidity_supply" type="AccountInfo" required>
+  PDA token account that will hold the reserve's liquidity.
+  - Seeds: `["reserve_liq_supply", reserve.key()]`
+  - Initialized by this instruction
+</ParamField>
+
+<ParamField path="fee_receiver" type="AccountInfo" required>
+  PDA token account that will hold protocol fees.
+  - Seeds: `["fee_receiver", reserve.key()]`
+  - Initialized by this instruction
+</ParamField>
+
+<ParamField path="reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The collateral token mint (cToken) for this reserve.
+  - Seeds: `["reserve_coll_mint", reserve.key()]`
+  - Initialized by this instruction with 6 decimals
+</ParamField>
+
+<ParamField path="reserve_collateral_supply" type="InterfaceAccount<TokenAccount>" required>
+  The vault holding collateral tokens.
+  - Seeds: `["reserve_coll_supply", reserve.key()]`
+  - Initialized by this instruction
+</ParamField>
+
+<ParamField path="initial_liquidity_source" type="InterfaceAccount<TokenAccount>" required>
+  Source account for the initial deposit.
+  - Must contain at least the minimum initial deposit amount
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidSigner`: Signer is not authorized to initialize reserves
+- `UnsupportedTokenExtension`: Token has unsupported Token-2022 extensions
+
+---
+
+## init_farms_for_reserve
+
+Initialize farming rewards for a reserve (collateral or debt farming).
+
+### Signature
+
+```rust
+pub fn init_farms_for_reserve(
+    ctx: Context<InitFarmsForReserve>,
+    mode: u8
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="mode" type="u8" required>
+  The farm type:
+  - `0`: Collateral farming
+  - `1`: Debt farming
+</ParamField>
+
+### Accounts
+
+<ParamField path="lending_market_owner" type="Signer" required>
+  The owner of the lending market.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+  - Must have `lending_market_owner` matching signer
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to add farming to.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program.
+</ParamField>
+
+<ParamField path="farm_state" type="AccountInfo" required>
+  The farm state account (initialized via CPI).
+  - Must be mutable
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+---
+
+## update_reserve_config
+
+Update configuration parameters for a reserve.
+
+### Signature
+
+```rust
+pub fn update_reserve_config(
+    ctx: Context<UpdateReserveConfig>,
+    mode: UpdateConfigMode,
+    value: Vec<u8>,
+    skip_config_integrity_validation: bool
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="mode" type="UpdateConfigMode" required>
+  The configuration field to update (e.g., fees, LTV, liquidation threshold, borrow limits, etc.).
+</ParamField>
+
+<ParamField path="value" type="Vec<u8>" required>
+  The new value encoded as bytes.
+</ParamField>
+
+<ParamField path="skip_config_integrity_validation" type="bool" required>
+  If true, skip validation checks. Only allowed if reserve is unused and blocked.
+</ParamField>
+
+### Accounts
+
+<ParamField path="signer" type="Signer" required>
+  Must be authorized to update reserve config (market owner, proposer, or global admin depending on mode).
+</ParamField>
+
+<ParamField path="global_config" type="AccountLoader<GlobalConfig>" required>
+  The global configuration account.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to update.
+  - Must be mutable
+  - Must belong to the lending market
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidSigner`: Signer is not authorized
+- `OperationNotPermittedMarketImmutable`: Market is immutable and update not allowed by global admin
+- `ReserveHasNotReceivedInitialDeposit`: Cannot update config before initial deposit
+- `InvalidConfig`: Configuration value is invalid
+
+---
+
+## refresh_reserve
+
+Refresh a reserve's state including interest rates and prices.
+
+### Signature
+
+```rust
+pub fn refresh_reserve(
+    ctx: Context<RefreshReserve>
+) -> Result<()>
+```
+
+### Parameters
+
+None.
+
+### Accounts
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to refresh.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="pyth_oracle" type="Option<AccountInfo>" required>
+  Pyth price oracle account (if configured).
+</ParamField>
+
+<ParamField path="switchboard_price_oracle" type="Option<AccountInfo>" required>
+  Switchboard price feed (if configured).
+</ParamField>
+
+<ParamField path="switchboard_twap_oracle" type="Option<AccountInfo>" required>
+  Switchboard TWAP feed (if configured).
+</ParamField>
+
+<ParamField path="scope_prices" type="Option<AccountInfo>" required>
+  Scope price feed (if configured).
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled (via access control)
+- `ReserveDeprecated`: Reserve version is outdated
+- Price-related errors if oracles are misconfigured
+
+---
+
+## refresh_reserves_batch
+
+Refresh multiple reserves in a single transaction.
+
+### Signature
+
+```rust
+pub fn refresh_reserves_batch(
+    ctx: Context<RefreshReservesBatch>,
+    skip_price_updates: bool
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="skip_price_updates" type="bool" required>
+  If true, skip fetching new prices from oracles. Only refresh interest rates.
+</ParamField>
+
+### Remaining Accounts
+
+For each reserve to refresh, provide accounts in this order:
+1. Reserve account (mutable)
+2. Lending market account
+3. If `skip_price_updates` is false, provide oracle accounts:
+   - Pyth oracle (or program ID as placeholder)
+   - Switchboard price oracle (or program ID as placeholder)
+   - Switchboard TWAP oracle (or program ID as placeholder)
+   - Scope prices (or program ID as placeholder)
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidAccountInput`: Missing or invalid accounts
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `ReserveDeprecated`: One of the reserves is deprecated
+
+---
+
+## redeem_fees
+
+Redeem accumulated protocol fees from a reserve, converting them from the supply vault to the fee receiver vault.
+
+### Signature
+
+```rust
+pub fn redeem_fees(
+    ctx: Context<RedeemFees>
+) -> Result<()>
+```
+
+### Parameters
+
+None.
+
+### Accounts
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to redeem fees from.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The liquidity token mint.
+</ParamField>
+
+<ParamField path="reserve_liquidity_fee_receiver" type="InterfaceAccount<TokenAccount>" required>
+  The fee receiver token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_supply_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for signing the transfer.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+---
+
+## withdraw_protocol_fee
+
+Withdraw protocol fees from the fee receiver to the global fee collector.
+
+### Signature
+
+```rust
+pub fn withdraw_protocol_fee(
+    ctx: Context<WithdrawProtocolFees>,
+    amount: u64
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="amount" type="u64" required>
+  The amount of fees to withdraw. Actual withdrawal is capped at available balance.
+</ParamField>
+
+### Accounts
+
+<ParamField path="global_config" type="AccountLoader<GlobalConfig>" required>
+  The global configuration account.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+</ParamField>
+
+<ParamField path="fee_vault" type="InterfaceAccount<TokenAccount>" required>
+  The fee receiver vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="fee_collector_ata" type="InterfaceAccount<TokenAccount>" required>
+  The global fee collector's associated token account.
+  - Must be mutable
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+---
+
+## socialize_loss (deprecated)
+
+<Note>This instruction is deprecated. Use `socialize_loss_v2` instead.</Note>
+
+Socialize bad debt from an unhealthy obligation across all cToken holders.
+
+### Signature
+
+```rust
+#[deprecated]
+pub fn socialize_loss(
+    ctx: Context<SocializeLoss>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+---
+
+## socialize_loss_v2
+
+Socialize bad debt from an unhealthy obligation across all cToken holders. Only callable by market owner.
+
+### Signature
+
+```rust
+pub fn socialize_loss_v2(
+    ctx: Context<SocializeLossV2>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of bad debt to socialize.
+</ParamField>
+
+### Accounts
+
+<ParamField path="lending_market_owner" type="Signer" required>
+  The owner of the lending market.
+</ParamField>
+
+<ParamField path="obligation" type="AccountLoader<Obligation>" required>
+  The obligation with bad debt.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to socialize loss in.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts if debt farming is enabled.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority.
+</ParamField>
+
+### Remaining Accounts
+
+All deposit reserves for the obligation (to verify no collateral remains).
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `CannotSocializeObligationWithCollateral`: Obligation still has collateral
+- `ObligationEmpty`: Obligation has no borrows or deposits

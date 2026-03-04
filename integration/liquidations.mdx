@@ -1,0 +1,623 @@
+---
+title: "Liquidations"
+description: "Understand liquidation mechanics and build liquidation bots for Kamino Lending"
+---
+
+## Overview
+
+Liquidations occur when a borrower's health factor falls below 1.0 (unhealthy LTV). Liquidators repay a portion of the debt and receive collateral at a discount (liquidation bonus).
+
+### Key Concepts
+
+- **Unhealthy Obligation**: LTV ratio exceeds maximum threshold
+- **Liquidation Bonus**: Discount given to liquidators (typically 5-10%)
+- **Partial Liquidation**: Liquidate up to a certain percentage per transaction
+- **Close Factor**: Maximum percentage of debt that can be repaid in one liquidation
+
+## When Positions Become Liquidatable
+
+An obligation becomes liquidatable when:
+
+```typescript
+// Health factor calculation
+function isLiquidatable(obligation: Obligation, reserves: Reserve[]): boolean {
+  let borrowedValue = 0;
+  let allowedBorrowValue = 0;
+  
+  // Calculate total borrowed value
+  for (const borrow of obligation.borrows) {
+    if (borrow.borrowedAmountSf.gt(new BN(0))) {
+      const reserve = reserves.find(r => r.pubkey.equals(borrow.borrowReserve));
+      borrowedValue += borrow.borrowedAmountSf.toNumber() * reserve.liquidity.marketPrice.toNumber();
+    }
+  }
+  
+  // Calculate allowed borrow value based on collateral
+  for (const deposit of obligation.deposits) {
+    if (deposit.depositedAmount.gt(new BN(0))) {
+      const reserve = reserves.find(r => r.pubkey.equals(deposit.depositReserve));
+      const collateralValue = deposit.depositedAmount.toNumber() * reserve.collateral.marketPrice.toNumber();
+      // Apply LTV ratio
+      allowedBorrowValue += collateralValue * (reserve.config.liquidationThreshold / 100);
+    }
+  }
+  
+  // Liquidatable if borrowed value exceeds allowed value
+  return borrowedValue > allowedBorrowValue;
+}
+```
+
+## Liquidate Obligation
+
+### Instruction: `liquidate_obligation_and_redeem_reserve_collateral_v2`
+
+<CodeGroup>
+```rust handler_liquidate_obligation_and_redeem_reserve_collateral.rs
+fn process_impl(
+    accounts: &LiquidateObligationAndRedeemReserveCollateral,
+    remaining_accounts: &[AccountInfo],
+    liquidity_amount: u64,
+    min_acceptable_received_liquidity_amount: u64,
+    max_allowed_ltv_override_percent: u64,
+) -> Result<()> {
+    lending_checks::liquidate_obligation_checks(accounts)?;
+    lending_checks::redeem_reserve_collateral_checks(/* ... */)?;
+    
+    let lending_market = &accounts.lending_market.load()?;
+    let obligation = &mut accounts.obligation.load_mut()?;
+    let clock = &Clock::get()?;
+    
+    // LTV override only for self-liquidation in staging
+    let max_allowed_ltv_override_pct_opt =
+        if accounts.liquidator.key() == obligation.owner && max_allowed_ltv_override_percent > 0 {
+            if cfg!(feature = "staging") {
+                Some(max_allowed_ltv_override_percent)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+    
+    // Get all deposit reserves for health calculation
+    let deposit_reserves = remaining_accounts.iter().map(|a| {
+        FatAccountLoader::try_from(a).expect("Invalid deposit reserve")
+    });
+    
+    // Calculate liquidation amounts
+    let LiquidateAndRedeemResult {
+        repay_amount,
+        withdraw_collateral_amount,
+        withdraw_amount,
+        total_withdraw_liquidity_amount,
+        ..
+    } = lending_operations::liquidate_and_redeem(
+        lending_market,
+        &accounts.repay_reserve,
+        &accounts.withdraw_reserve,
+        obligation,
+        clock,
+        liquidity_amount,
+        min_acceptable_received_liquidity_amount,
+        max_allowed_ltv_override_pct_opt,
+        deposit_reserves,
+    )?;
+    
+    // Transfer repayment from liquidator to reserve
+    token_transfer::repay_obligation_liquidity_transfer(
+        accounts.repay_liquidity_token_program.to_account_info(),
+        accounts.repay_reserve_liquidity_mint.to_account_info(),
+        accounts.user_source_liquidity.to_account_info(),
+        accounts.repay_reserve_liquidity_supply.to_account_info(),
+        accounts.liquidator.to_account_info(),
+        repay_amount,
+        accounts.repay_reserve_liquidity_mint.decimals,
+    )?;
+    
+    let lending_market_key = accounts.lending_market.key();
+    let authority_signer_seeds = gen_signer_seeds!(
+        lending_market_key,
+        lending_market.bump_seed as u8
+    );
+    
+    // Transfer collateral from reserve to liquidator
+    token_transfer::withdraw_obligation_collateral_transfer(
+        accounts.collateral_token_program.to_account_info(),
+        accounts.user_destination_collateral.to_account_info(),
+        accounts.withdraw_reserve_collateral_supply.to_account_info(),
+        accounts.lending_market_authority.to_account_info(),
+        authority_signer_seeds,
+        withdraw_amount,
+    )?;
+    
+    // Redeem collateral to liquidity if requested
+    if let Some((withdraw_liquidity_amount, protocol_fee)) = total_withdraw_liquidity_amount {
+        token_transfer::redeem_reserve_collateral_transfer(
+            accounts.collateral_token_program.to_account_info(),
+            accounts.withdraw_liquidity_token_program.to_account_info(),
+            accounts.withdraw_reserve_liquidity_mint.to_account_info(),
+            accounts.withdraw_reserve_collateral_mint.to_account_info(),
+            accounts.user_destination_collateral.to_account_info(),
+            accounts.liquidator.to_account_info(),
+            accounts.withdraw_reserve_liquidity_supply.to_account_info(),
+            accounts.user_destination_liquidity.to_account_info(),
+            accounts.lending_market_authority.to_account_info(),
+            authority_signer_seeds,
+            withdraw_collateral_amount,
+            withdraw_liquidity_amount,
+            accounts.withdraw_reserve_liquidity_mint.decimals,
+        )?;
+        
+        // Transfer protocol fee
+        token_interface::transfer_checked(
+            CpiContext::new(
+                accounts.withdraw_liquidity_token_program.to_account_info(),
+                token_interface::TransferChecked {
+                    from: accounts.user_destination_liquidity.to_account_info(),
+                    to: accounts.withdraw_reserve_liquidity_fee_receiver.to_account_info(),
+                    authority: accounts.liquidator.to_account_info(),
+                    mint: accounts.withdraw_reserve_liquidity_mint.to_account_info(),
+                },
+            ),
+            protocol_fee,
+            accounts.withdraw_reserve_liquidity_mint.decimals,
+        )?;
+    }
+    
+    Ok(())
+}
+```
+
+```typescript TypeScript Client
+async function liquidateObligation(
+  program: Program,
+  liquidator: Keypair,
+  obligation: PublicKey,
+  repayReserve: PublicKey,
+  withdrawReserve: PublicKey,
+  lendingMarket: PublicKey,
+  liquidityAmount: number,
+  minAcceptableReceivedAmount: number = 0
+) {
+  const obligationData = await program.account.obligation.fetch(obligation);
+  const repayReserveData = await program.account.reserve.fetch(repayReserve);
+  const withdrawReserveData = await program.account.reserve.fetch(withdrawReserve);
+  
+  const [lendingMarketAuthority] = PublicKey.findProgramAddressSync(
+    [Buffer.from('lma'), lendingMarket.toBuffer()],
+    program.programId
+  );
+  
+  // Liquidator's token accounts
+  const userSourceLiquidity = await getAssociatedTokenAddress(
+    repayReserveData.liquidity.mintPubkey,
+    liquidator.publicKey
+  );
+  
+  const userDestinationCollateral = await getAssociatedTokenAddress(
+    withdrawReserveData.collateral.mintPubkey,
+    liquidator.publicKey
+  );
+  
+  const userDestinationLiquidity = await getAssociatedTokenAddress(
+    withdrawReserveData.liquidity.mintPubkey,
+    liquidator.publicKey
+  );
+  
+  // Collect deposit reserves for health calculation
+  const depositReserves = obligationData.deposits
+    .filter(d => d.depositedAmount.gt(new BN(0)))
+    .map(d => ({ pubkey: d.depositReserve, isSigner: false, isWritable: false }));
+  
+  await program.methods
+    .liquidateObligationAndRedeemReserveCollateralV2(
+      new BN(liquidityAmount),
+      new BN(minAcceptableReceivedAmount),
+      new BN(0) // max_allowed_ltv_override_percent (0 for normal liquidation)
+    )
+    .accounts({
+      liquidationAccounts: {
+        liquidator: liquidator.publicKey,
+        obligation: obligation,
+        lendingMarket: lendingMarket,
+        lendingMarketAuthority: lendingMarketAuthority,
+        repayReserve: repayReserve,
+        repayReserveLiquidityMint: repayReserveData.liquidity.mintPubkey,
+        repayReserveLiquiditySupply: repayReserveData.liquidity.supplyVault,
+        withdrawReserve: withdrawReserve,
+        withdrawReserveLiquidityMint: withdrawReserveData.liquidity.mintPubkey,
+        withdrawReserveCollateralMint: withdrawReserveData.collateral.mintPubkey,
+        withdrawReserveCollateralSupply: withdrawReserveData.collateral.supplyVault,
+        withdrawReserveLiquiditySupply: withdrawReserveData.liquidity.supplyVault,
+        withdrawReserveLiquidityFeeReceiver: withdrawReserveData.liquidity.feeVault,
+        userSourceLiquidity: userSourceLiquidity,
+        userDestinationCollateral: userDestinationCollateral,
+        userDestinationLiquidity: userDestinationLiquidity,
+        collateralTokenProgram: TOKEN_PROGRAM_ID,
+        repayLiquidityTokenProgram: TOKEN_PROGRAM_ID,
+        withdrawLiquidityTokenProgram: TOKEN_PROGRAM_ID,
+        instructionSysvarAccount: SYSVAR_INSTRUCTIONS_PUBKEY,
+      },
+      // farms accounts (optional)
+    })
+    .remainingAccounts(depositReserves)
+    .signers([liquidator])
+    .rpc();
+}
+```
+</CodeGroup>
+
+### Account Context
+
+```rust
+#[derive(Accounts)]
+pub struct LiquidateObligationAndRedeemReserveCollateral<'info> {
+    pub liquidator: Signer<'info>,
+    
+    #[account(mut, has_one = lending_market)]
+    pub obligation: AccountLoader<'info, Obligation>,
+    
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    #[account(
+        seeds = [seeds::LENDING_MARKET_AUTH, lending_market.key().as_ref()],
+        bump = lending_market.load()?.bump_seed as u8,
+    )]
+    pub lending_market_authority: AccountInfo<'info>,
+    
+    // Repay reserve (debt being paid off)
+    #[account(mut, has_one = lending_market)]
+    pub repay_reserve: AccountLoader<'info, Reserve>,
+    #[account(address = repay_reserve.load()?.liquidity.mint_pubkey)]
+    pub repay_reserve_liquidity_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, address = repay_reserve.load()?.liquidity.supply_vault)]
+    pub repay_reserve_liquidity_supply: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    // Withdraw reserve (collateral being seized)
+    #[account(mut, has_one = lending_market)]
+    pub withdraw_reserve: AccountLoader<'info, Reserve>,
+    #[account(address = withdraw_reserve.load()?.liquidity.mint_pubkey)]
+    pub withdraw_reserve_liquidity_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, address = withdraw_reserve.load()?.collateral.mint_pubkey)]
+    pub withdraw_reserve_collateral_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(mut, address = withdraw_reserve.load()?.collateral.supply_vault)]
+    pub withdraw_reserve_collateral_supply: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut, address = withdraw_reserve.load()?.liquidity.supply_vault)]
+    pub withdraw_reserve_liquidity_supply: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut, address = withdraw_reserve.load()?.liquidity.fee_vault)]
+    pub withdraw_reserve_liquidity_fee_receiver: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    // Liquidator accounts
+    #[account(mut)]
+    pub user_source_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub user_destination_collateral: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(mut)]
+    pub user_destination_liquidity: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    pub collateral_token_program: Program<'info, Token>,
+    pub repay_liquidity_token_program: Interface<'info, TokenInterface>,
+    pub withdraw_liquidity_token_program: Interface<'info, TokenInterface>,
+    
+    #[account(address = SysInstructions::id())]
+    pub instruction_sysvar_account: AccountInfo<'info>,
+}
+```
+
+## Calculate Liquidation Bonus
+
+```typescript
+function calculateLiquidationBonus(
+  repayAmount: number,
+  repayReserve: Reserve,
+  withdrawReserve: Reserve
+): { collateralAmount: number; bonus: number } {
+  // Get prices
+  const repayPrice = repayReserve.liquidity.marketPrice.toNumber();
+  const withdrawPrice = withdrawReserve.collateral.marketPrice.toNumber();
+  
+  // Liquidation bonus (e.g., 5% = 1.05)
+  const bonusRate = 1 + (withdrawReserve.config.liquidationBonus / 100);
+  
+  // Value being repaid
+  const repayValue = repayAmount * repayPrice;
+  
+  // Collateral value with bonus
+  const collateralValueWithBonus = repayValue * bonusRate;
+  
+  // Collateral amount to receive
+  const collateralAmount = collateralValueWithBonus / withdrawPrice;
+  
+  // Actual bonus in collateral tokens
+  const bonus = collateralAmount - (repayValue / withdrawPrice);
+  
+  return { collateralAmount, bonus };
+}
+```
+
+## Partial vs Full Liquidations
+
+### Partial Liquidation
+
+Liquidate a percentage of the debt (respecting close factor):
+
+```typescript
+async function partialLiquidation(
+  program: Program,
+  obligation: PublicKey,
+  closeFactorPct: number = 20 // 20% of debt
+) {
+  const obligationData = await program.account.obligation.fetch(obligation);
+  
+  // Find largest borrow
+  let largestBorrow = null;
+  let maxBorrowValue = 0;
+  
+  for (const borrow of obligationData.borrows) {
+    if (borrow.borrowedAmountSf.gt(new BN(0))) {
+      const borrowValue = borrow.borrowedAmountSf.toNumber();
+      if (borrowValue > maxBorrowValue) {
+        maxBorrowValue = borrowValue;
+        largestBorrow = borrow;
+      }
+    }
+  }
+  
+  // Calculate liquidation amount (closeFactorPct of largest borrow)
+  const liquidateAmount = Math.floor(
+    largestBorrow.borrowedAmountSf.toNumber() * (closeFactorPct / 100)
+  );
+  
+  // Execute liquidation
+  // ...
+}
+```
+
+### Full Liquidation
+
+Liquidate entire position if severely underwater:
+
+```typescript
+async function fullLiquidation(
+  program: Program,
+  obligation: PublicKey
+) {
+  const obligationData = await program.account.obligation.fetch(obligation);
+  
+  // Liquidate all borrows
+  for (const borrow of obligationData.borrows) {
+    if (borrow.borrowedAmountSf.gt(new BN(0))) {
+      // Use u64::MAX to repay entire borrow
+      await liquidateObligation(
+        program,
+        liquidator,
+        obligation,
+        borrow.borrowReserve,
+        // Choose best collateral to seize
+        selectBestCollateral(obligationData),
+        lendingMarket,
+        u64Max,
+        0
+      );
+    }
+  }
+}
+```
+
+## Liquidation Bot Example
+
+<Steps>
+  <Step title="Monitor Obligations">
+    ```typescript
+    async function monitorObligations(
+      program: Program,
+      lendingMarket: PublicKey
+    ): Promise<PublicKey[]> {
+      // Get all obligations for the lending market
+      const obligations = await program.account.obligation.all([
+        {
+          memcmp: {
+            offset: 8 + 32, // Skip discriminator + last_update
+            bytes: lendingMarket.toBase58(),
+          },
+        },
+      ]);
+      
+      const unhealthy: PublicKey[] = [];
+      
+      for (const { publicKey, account } of obligations) {
+        // Fetch all deposit and borrow reserves
+        const reserves = await fetchReserves(program, account);
+        
+        if (isLiquidatable(account, reserves)) {
+          unhealthy.push(publicKey);
+          console.log(`Found liquidatable obligation: ${publicKey.toString()}`);
+        }
+      }
+      
+      return unhealthy;
+    }
+    ```
+  </Step>
+  
+  <Step title="Calculate Optimal Liquidation">
+    ```typescript
+    function calculateOptimalLiquidation(
+      obligation: Obligation,
+      reserves: Map<string, Reserve>
+    ): { repayReserve: PublicKey; withdrawReserve: PublicKey; amount: number } {
+      // Find largest borrow
+      let largestBorrow = null;
+      let maxValue = 0;
+      
+      for (const borrow of obligation.borrows) {
+        if (borrow.borrowedAmountSf.gt(new BN(0))) {
+          const reserve = reserves.get(borrow.borrowReserve.toString());
+          const value = borrow.borrowedAmountSf.toNumber() * reserve.liquidity.marketPrice.toNumber();
+          
+          if (value > maxValue) {
+            maxValue = value;
+            largestBorrow = borrow;
+          }
+        }
+      }
+      
+      // Find best collateral to seize (highest bonus)
+      let bestCollateral = null;
+      let maxBonus = 0;
+      
+      for (const deposit of obligation.deposits) {
+        if (deposit.depositedAmount.gt(new BN(0))) {
+          const reserve = reserves.get(deposit.depositReserve.toString());
+          const bonus = reserve.config.liquidationBonus;
+          
+          if (bonus > maxBonus) {
+            maxBonus = bonus;
+            bestCollateral = deposit;
+          }
+        }
+      }
+      
+      // Calculate liquidation amount (respect close factor)
+      const closeFactor = 0.5; // 50%
+      const amount = Math.floor(
+        largestBorrow.borrowedAmountSf.toNumber() * closeFactor
+      );
+      
+      return {
+        repayReserve: largestBorrow.borrowReserve,
+        withdrawReserve: bestCollateral.depositReserve,
+        amount,
+      };
+    }
+    ```
+  </Step>
+  
+  <Step title="Execute Liquidation">
+    ```typescript
+    async function executeLiquidation(
+      program: Program,
+      liquidator: Keypair,
+      obligation: PublicKey,
+      lendingMarket: PublicKey
+    ) {
+      try {
+        const obligationData = await program.account.obligation.fetch(obligation);
+        const reserves = await fetchReserves(program, obligationData);
+        
+        if (!isLiquidatable(obligationData, reserves)) {
+          console.log('Obligation is healthy, skipping');
+          return;
+        }
+        
+        const { repayReserve, withdrawReserve, amount } = calculateOptimalLiquidation(
+          obligationData,
+          reserves
+        );
+        
+        console.log(`Liquidating ${amount} from ${obligation.toString()}`);
+        
+        await liquidateObligation(
+          program,
+          liquidator,
+          obligation,
+          repayReserve,
+          withdrawReserve,
+          lendingMarket,
+          amount,
+          0 // min acceptable
+        );
+        
+        console.log('Liquidation successful!');
+      } catch (error) {
+        console.error('Liquidation failed:', error);
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Run Bot Loop">
+    ```typescript
+    async function runLiquidationBot(
+      program: Program,
+      liquidator: Keypair,
+      lendingMarket: PublicKey
+    ) {
+      console.log('Starting liquidation bot...');
+      
+      while (true) {
+        try {
+          // Find unhealthy obligations
+          const unhealthy = await monitorObligations(program, lendingMarket);
+          
+          // Execute liquidations
+          for (const obligation of unhealthy) {
+            await executeLiquidation(
+              program,
+              liquidator,
+              obligation,
+              lendingMarket
+            );
+          }
+          
+          // Wait before next iteration
+          await new Promise(resolve => setTimeout(resolve, 10000)); // 10s
+        } catch (error) {
+          console.error('Bot error:', error);
+        }
+      }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+```typescript
+try {
+  await liquidateObligation(/* ... */);
+} catch (error) {
+  if (error.message.includes('ObligationHealthy')) {
+    console.error('Cannot liquidate healthy obligation');
+  } else if (error.message.includes('LiquidationTooSmall')) {
+    console.error('Liquidation amount below minimum');
+  } else if (error.message.includes('InvalidAmount')) {
+    console.error('Invalid liquidation amount');
+  }
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Monitor Multiple Markets">
+    Run bots across different lending markets to maximize opportunities.
+  </Accordion>
+  
+  <Accordion title="Optimize Gas Costs">
+    Batch liquidations when possible and use priority fees strategically.
+  </Accordion>
+  
+  <Accordion title="Handle MEV">
+    Be aware of MEV (Maximal Extractable Value) and use private RPCs if needed.
+  </Accordion>
+  
+  <Accordion title="Risk Management">
+    Set slippage limits with `min_acceptable_received_liquidity_amount` to protect against price manipulation.
+  </Accordion>
+  
+  <Accordion title="Reserve Selection">
+    Choose collateral with highest liquidation bonus and sufficient liquidity for quick exit.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup Guide" icon="wrench" href="/integration/setup">
+    Review integration setup
+  </Card>
+  <Card title="Borrow & Repay" icon="hand-holding-dollar" href="/integration/borrow-repay">
+    Understand borrowing mechanics
+  </Card>
+</CardGroup>

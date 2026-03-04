@@ -1,0 +1,222 @@
+---
+title: "Liquidation Instructions"
+description: "Instructions for liquidating unhealthy positions"
+---
+
+## liquidate_obligation_and_redeem_reserve_collateral
+
+Liquidate an unhealthy obligation by repaying some of its debt and receiving collateral at a discount.
+
+### Signature
+
+```rust
+pub fn liquidate_obligation_and_redeem_reserve_collateral_v2(
+    ctx: Context<LiquidateObligationAndRedeemReserveCollateralV2>,
+    liquidity_amount: u64,
+    min_acceptable_received_liquidity_amount: u64,
+    max_allowed_ltv_override_percent: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of debt to repay. The actual amount may be reduced based on liquidation rules and available collateral.
+</ParamField>
+
+<ParamField path="min_acceptable_received_liquidity_amount" type="u64" required>
+  The minimum amount of collateral liquidity the liquidator is willing to receive. Protects against slippage.
+</ParamField>
+
+<ParamField path="max_allowed_ltv_override_percent" type="u64" required>
+  LTV override percentage. Only used in staging environment when liquidator is the obligation owner. Set to 0 normally.
+</ParamField>
+
+### Accounts
+
+<ParamField path="liquidation_accounts.liquidator" type="Signer" required>
+  The liquidator performing the liquidation.
+</ParamField>
+
+<ParamField path="liquidation_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The unhealthy obligation to liquidate.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="liquidation_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="liquidation_accounts.repay_reserve" type="AccountLoader<Reserve>" required>
+  The reserve for the debt being repaid.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.repay_reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The repay reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="liquidation_accounts.repay_reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The repay reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve" type="AccountLoader<Reserve>" required>
+  The reserve for the collateral being liquidated.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The withdraw reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The withdraw reserve's collateral token mint.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve_collateral_supply" type="InterfaceAccount<TokenAccount>" required>
+  The withdraw reserve's collateral supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The withdraw reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_reserve_liquidity_fee_receiver" type="InterfaceAccount<TokenAccount>" required>
+  The withdraw reserve's fee receiver vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.user_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The liquidator's source liquidity token account (for repayment).
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.user_destination_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The liquidator's destination collateral token account (receives collateral).
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.user_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The liquidator's destination liquidity token account (receives redeemed liquidity).
+  - Must be mutable
+</ParamField>
+
+<ParamField path="liquidation_accounts.collateral_token_program" type="Program<Token>" required>
+  The SPL Token program.
+</ParamField>
+
+<ParamField path="liquidation_accounts.repay_liquidity_token_program" type="Interface<TokenInterface>" required>
+  The token program for repay liquidity.
+</ParamField>
+
+<ParamField path="liquidation_accounts.withdraw_liquidity_token_program" type="Interface<TokenInterface>" required>
+  The token program for withdraw liquidity.
+</ParamField>
+
+<ParamField path="liquidation_accounts.instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+<ParamField path="collateral_farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts for collateral (v2 only).
+</ParamField>
+
+<ParamField path="debt_farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts for debt (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Remaining Accounts
+
+All deposit reserves for the obligation (to calculate total collateral value).
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `ObligationHealthy`: Cannot liquidate a healthy obligation
+- `LiquidationTooSmall`: Liquidation amount is too small
+- `LiquidationRewardTooSmall`: Received amount is less than minimum acceptable
+- `CollateralNonLiquidatable`: The collateral has LTV=0 and cannot be liquidated
+- `LiquidationBorrowFactorPriority`: Must prioritize debt with highest borrow factor
+- `LiquidationLowestLiquidationLtvPriority`: Must prioritize collateral with lowest liquidation LTV
+- `InsufficientRepayAmount`: Repay amount is less than required by liquidation rules
+
+### Liquidation Rules
+
+The instruction enforces several rules:
+
+1. **Obligation must be unhealthy**: LTV exceeds liquidation threshold
+2. **Borrow factor priority**: Must liquidate the debt with the highest borrow factor first (can be bypassed with `min_value_skip_liquidation_bf_checks`)
+3. **Collateral LTV priority**: Must liquidate the collateral with the lowest liquidation LTV first (can be bypassed with `min_value_skip_liquidation_ltv_checks`)
+4. **Close factor**: Can only liquidate up to a percentage of total debt (configured in market)
+5. **Full liquidation threshold**: If debt value is below threshold, must fully liquidate
+6. **Liquidation bonus**: Liquidator receives collateral at a discount based on configuration
+
+---
+
+## mark_obligation_for_deleveraging
+
+Mark an unhealthy obligation for automatic deleveraging. Only callable by the lending market owner.
+
+### Signature
+
+```rust
+pub fn mark_obligation_for_deleveraging(
+    ctx: Context<MarkObligationForDeleveraging>,
+    autodeleverage_target_ltv_pct: u8
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="autodeleverage_target_ltv_pct" type="u8" required>
+  The target LTV percentage to deleverage the obligation down to (1-100).
+</ParamField>
+
+### Accounts
+
+<ParamField path="lending_market_owner" type="Signer" required>
+  The owner of the lending market.
+</ParamField>
+
+<ParamField path="obligation" type="AccountLoader<Obligation>" required>
+  The obligation to mark for deleveraging.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+  - Must have `lending_market_owner` matching signer
+  - Must have `autodeleverage_enabled` set to true
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success. The obligation is marked with a timestamp and target LTV for deleveraging.
+
+### Errors
+
+- `ObligationHealthy`: Obligation is not unhealthy enough to deleverage
+- `ObligationCurrentlyMarkedForDeleveraging`: Obligation is already marked for deleveraging
+- Market owner validation errors if signer is not the market owner
+
+### Usage
+
+This instruction is used when an obligation cannot be liquidated normally (e.g., due to lack of liquidity) and needs to be gradually deleveraged through a special process. After marking, the obligation can be deleveraged through specific deleveraging operations that bypass normal LTV checks.

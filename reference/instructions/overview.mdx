@@ -1,0 +1,91 @@
+---
+title: "Instructions Overview"
+description: "Complete reference of all Kamino Lending program instructions"
+---
+
+The Kamino Lending program provides a comprehensive set of instructions for managing lending markets, reserves, obligations, and liquidity operations on Solana.
+
+## Program IDs
+
+- **Production**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+- **Staging**: `SLendK7ySfcEzyaFqy93gDnD3RtrpXJcnRwb6zFHJSh`
+
+## Instruction Categories
+
+### Lending Market Instructions
+
+Manage lending market configuration and ownership.
+
+| Instruction | Description |
+|------------|-------------|
+| [init_lending_market](/reference/instructions/lending-market#init_lending_market) | Initialize a new lending market |
+| [update_lending_market](/reference/instructions/lending-market#update_lending_market) | Update lending market configuration |
+| [update_lending_market_owner](/reference/instructions/lending-market#update_lending_market_owner) | Transfer lending market ownership |
+
+### Reserve Instructions
+
+Manage reserve configuration, initialization, and maintenance.
+
+| Instruction | Description |
+|------------|-------------|
+| [init_reserve](/reference/instructions/reserve#init_reserve) | Initialize a new reserve |
+| [init_farms_for_reserve](/reference/instructions/reserve#init_farms_for_reserve) | Initialize farming rewards for a reserve |
+| [update_reserve_config](/reference/instructions/reserve#update_reserve_config) | Update reserve configuration |
+| [refresh_reserve](/reference/instructions/reserve#refresh_reserve) | Refresh reserve state and interest rates |
+| [refresh_reserves_batch](/reference/instructions/reserve#refresh_reserves_batch) | Refresh multiple reserves in one transaction |
+| [redeem_fees](/reference/instructions/reserve#redeem_fees) | Redeem accumulated fees from reserve |
+| [withdraw_protocol_fee](/reference/instructions/reserve#withdraw_protocol_fee) | Withdraw protocol fees |
+| [socialize_loss](/reference/instructions/reserve#socialize_loss) | Socialize bad debt (deprecated) |
+| [socialize_loss_v2](/reference/instructions/reserve#socialize_loss_v2) | Socialize bad debt (current version) |
+
+### Obligation Instructions
+
+Manage user obligations (positions).
+
+| Instruction | Description |
+|------------|-------------|
+| [init_obligation](/reference/instructions/obligation#init_obligation) | Initialize a new obligation |
+| [init_obligation_farms_for_reserve](/reference/instructions/obligation#init_obligation_farms_for_reserve) | Initialize farming for an obligation |
+| [refresh_obligation](/reference/instructions/obligation#refresh_obligation) | Refresh obligation state |
+| [refresh_obligation_farms_for_reserve](/reference/instructions/obligation#refresh_obligation_farms_for_reserve) | Refresh obligation farming state |
+
+### Liquidity Instructions
+
+Deposit, borrow, and repay operations.
+
+| Instruction | Description |
+|------------|-------------|
+| [deposit_reserve_liquidity](/reference/instructions/liquidity#deposit_reserve_liquidity) | Deposit liquidity into a reserve |
+| [deposit_reserve_liquidity_and_obligation_collateral](/reference/instructions/liquidity#deposit_reserve_liquidity_and_obligation_collateral) | Deposit and use as collateral in one step |
+| [borrow_obligation_liquidity](/reference/instructions/liquidity#borrow_obligation_liquidity) | Borrow liquidity from a reserve |
+| [repay_obligation_liquidity](/reference/instructions/liquidity#repay_obligation_liquidity) | Repay borrowed liquidity |
+| [flash_borrow_reserve_liquidity](/reference/instructions/liquidity#flash_borrow_reserve_liquidity) | Flash borrow liquidity |
+| [flash_repay_reserve_liquidity](/reference/instructions/liquidity#flash_repay_reserve_liquidity) | Flash repay borrowed liquidity |
+
+### Collateral Instructions
+
+Manage collateral deposits and withdrawals.
+
+| Instruction | Description |
+|------------|-------------|
+| [redeem_reserve_collateral](/reference/instructions/collateral#redeem_reserve_collateral) | Redeem collateral tokens for liquidity |
+| [deposit_obligation_collateral](/reference/instructions/collateral#deposit_obligation_collateral) | Deposit collateral to an obligation |
+| [withdraw_obligation_collateral](/reference/instructions/collateral#withdraw_obligation_collateral) | Withdraw collateral from an obligation |
+| [withdraw_obligation_collateral_and_redeem_reserve_collateral](/reference/instructions/collateral#withdraw_obligation_collateral_and_redeem_reserve_collateral) | Withdraw and redeem in one step |
+
+### Liquidation Instructions
+
+Liquidate unhealthy positions.
+
+| Instruction | Description |
+|------------|-------------|
+| [liquidate_obligation_and_redeem_reserve_collateral](/reference/instructions/liquidation#liquidate_obligation_and_redeem_reserve_collateral) | Liquidate an unhealthy obligation |
+| [mark_obligation_for_deleveraging](/reference/instructions/liquidation#mark_obligation_for_deleveraging) | Mark obligation for automatic deleveraging |
+
+## Versioning
+
+Many instructions have deprecated v1 variants and current v2 variants. The v2 variants include support for farming rewards. Always use v2 variants unless you have a specific reason to use v1.
+
+## Emergency Mode
+
+Most instructions are disabled when the lending market is in emergency mode. Only administrative and refresh operations are allowed during emergency mode.

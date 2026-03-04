@@ -1,0 +1,366 @@
+---
+title: "Collateral Instructions"
+description: "Instructions for managing collateral deposits and withdrawals"
+---
+
+## redeem_reserve_collateral
+
+Redeem collateral tokens (cTokens) for underlying liquidity tokens from a reserve.
+
+### Signature
+
+```rust
+pub fn redeem_reserve_collateral(
+    ctx: Context<RedeemReserveCollateral>,
+    collateral_amount: u64
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="collateral_amount" type="u64" required>
+  The amount of collateral tokens to redeem.
+</ParamField>
+
+### Accounts
+
+<ParamField path="owner" type="Signer" required>
+  The owner of the collateral tokens.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's collateral token mint.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_source_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The user's source collateral token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination liquidity token account.
+  - Must be mutable
+  - Must have owner as authority
+</ParamField>
+
+<ParamField path="collateral_token_program" type="Program<Token>" required>
+  The SPL Token program.
+</ParamField>
+
+<ParamField path="liquidity_token_program" type="Interface<TokenInterface>" required>
+  The token program for liquidity.
+</ParamField>
+
+<ParamField path="instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled (via access control)
+- `WithdrawTooSmall`: Withdrawal amount is too small
+- `InsufficientLiquidity`: Reserve doesn't have enough liquidity
+
+---
+
+## deposit_obligation_collateral
+
+Deposit collateral tokens from a user's wallet into an obligation.
+
+### Signature
+
+```rust
+pub fn deposit_obligation_collateral_v2(
+    ctx: Context<DepositObligationCollateralV2>,
+    collateral_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="collateral_amount" type="u64" required>
+  The amount of collateral tokens to deposit.
+</ParamField>
+
+### Accounts
+
+<ParamField path="deposit_accounts.owner" type="Signer" required>
+  The owner of the obligation.
+</ParamField>
+
+<ParamField path="deposit_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="deposit_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="deposit_accounts.deposit_reserve" type="AccountLoader<Reserve>" required>
+  The reserve for the collateral being deposited.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve_destination_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's collateral supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.user_source_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The user's source collateral token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.token_program" type="Program<Token>" required>
+  The SPL Token program.
+</ParamField>
+
+<ParamField path="deposit_accounts.instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority (v2 only).
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `ObligationReserveLimit`: Obligation has too many different collateral types
+- `IsolatedAssetTierViolation`: Collateral violates isolated asset rules
+- `InconsistentElevationGroup`: Reserve elevation group doesn't match obligation
+
+---
+
+## withdraw_obligation_collateral
+
+Withdraw collateral tokens from an obligation to a user's wallet.
+
+### Signature
+
+```rust
+pub fn withdraw_obligation_collateral_v2(
+    ctx: Context<WithdrawObligationCollateralV2>,
+    collateral_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="collateral_amount" type="u64" required>
+  The amount of collateral tokens to withdraw.
+</ParamField>
+
+### Accounts
+
+<ParamField path="withdraw_accounts.owner" type="Signer" required>
+  The owner of the obligation.
+  - Must be mutable (may receive rent if obligation is closed)
+</ParamField>
+
+<ParamField path="withdraw_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="withdraw_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="withdraw_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="withdraw_accounts.withdraw_reserve" type="AccountLoader<Reserve>" required>
+  The reserve for the collateral being withdrawn.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.reserve_source_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's collateral supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.user_destination_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination collateral token account.
+  - Must be mutable
+  - Must have owner as authority
+</ParamField>
+
+<ParamField path="withdraw_accounts.token_program" type="Program<Token>" required>
+  The SPL Token program.
+</ParamField>
+
+<ParamField path="withdraw_accounts.instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success. The obligation account is automatically closed if it has no remaining deposits or borrows.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `WithdrawTooLarge`: Withdrawal would make obligation unhealthy
+- `ObligationCollateralLtvZero`: Obligation has collateral with LTV=0 that must be withdrawn first
+- `WorseLtvBlocked`: Withdrawal would worsen the obligation's LTV
+
+---
+
+## withdraw_obligation_collateral_and_redeem_reserve_collateral
+
+Withdraw collateral from an obligation and immediately redeem it for underlying liquidity in a single transaction.
+
+### Signature
+
+```rust
+pub fn withdraw_obligation_collateral_and_redeem_reserve_collateral_v2(
+    ctx: Context<WithdrawObligationCollateralAndRedeemReserveCollateralV2>,
+    collateral_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="collateral_amount" type="u64" required>
+  The amount of collateral tokens to withdraw and redeem.
+</ParamField>
+
+### Accounts
+
+<ParamField path="withdraw_accounts.owner" type="Signer" required>
+  The owner of the obligation.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="withdraw_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="withdraw_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="withdraw_accounts.withdraw_reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="withdraw_accounts.reserve_source_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's collateral supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's collateral token mint.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="withdraw_accounts.user_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination liquidity token account.
+  - Must be mutable
+  - Must have owner as authority
+</ParamField>
+
+<ParamField path="withdraw_accounts.collateral_token_program" type="Program<Token>" required>
+  The SPL Token program.
+</ParamField>
+
+<ParamField path="withdraw_accounts.liquidity_token_program" type="Interface<TokenInterface>" required>
+  The token program for liquidity.
+</ParamField>
+
+<ParamField path="withdraw_accounts.instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success. The obligation account is automatically closed if it has no remaining deposits or borrows.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `WithdrawTooLarge`: Withdrawal would make obligation unhealthy
+- `InsufficientLiquidity`: Reserve doesn't have enough liquidity for redemption
+- `WorseLtvBlocked`: Withdrawal would worsen the obligation's LTV

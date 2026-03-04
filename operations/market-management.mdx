@@ -1,0 +1,314 @@
+---
+title: 'Market Management'
+description: 'Initialize and manage lending markets in Kamino Lending'
+---
+
+## Overview
+
+A lending market is the top-level organizational unit in Kamino Lending. Each market has its own configuration, reserves, and administrative controls. This guide covers market initialization, configuration updates, and ownership management.
+
+## Initializing a Lending Market
+
+Use the `init_lending_market` instruction to create a new lending market.
+
+### Instruction Parameters
+
+```rust
+pub fn init_lending_market(
+    ctx: Context<InitLendingMarket>,
+    quote_currency: [u8; 32],
+) -> Result<()>
+```
+
+**Parameters:**
+- `quote_currency`: 32-byte UTF-8 string identifying the quote currency (e.g., "USD")
+
+### Accounts Required
+
+```rust
+pub struct InitLendingMarket<'info> {
+    #[account(mut)]
+    pub lending_market_owner: Signer<'info>,
+    
+    #[account(zero)]
+    pub lending_market: AccountLoader<'info, LendingMarket>,
+    
+    pub lending_market_authority: AccountInfo<'info>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+```
+
+See `handler_init_lending_market.rs:8` for implementation.
+
+### Initial Configuration
+
+When initialized, a market is created with default values:
+
+- **Version**: Current program version
+- **Emergency Mode**: Disabled (0)
+- **Liquidation Close Factor**: 20% (configurable)
+- **Max Liquidatable Value**: 500,000 USD (configurable)
+- **Global Borrow Limit**: Unlimited by default
+- **Referral Fee**: 0 bps (disabled)
+
+See `state/lending_market.rs:216-262` for all default values.
+
+## Updating Market Configuration
+
+Use the `update_lending_market` instruction to modify market parameters.
+
+### Update Modes
+
+The `UpdateLendingMarketMode` enum defines all configurable parameters. Key modes include:
+
+```rust
+pub enum UpdateLendingMarketMode {
+    UpdateOwner = 0,
+    UpdateEmergencyMode = 1,
+    UpdateLiquidationCloseFactor = 2,
+    UpdateLiquidationMaxValue = 3,
+    UpdateGlobalAllowedBorrow = 5,
+    UpdateMinFullLiquidationThreshold = 7,
+    UpdateEmergencyCouncil = 6,
+    UpdateInsolvencyRiskLtv = 8,
+    UpdateElevationGroup = 9,
+    UpdateReferralFeeBps = 10,
+    UpdatePriceRefreshTriggerToMaxAgePct = 12,
+    UpdateAutodeleverageEnabled = 13,
+    UpdateBorrowingDisabled = 14,
+    UpdateMinNetValueObligationPostAction = 15,
+    UpdateName = 19,
+    UpdateInitialDepositAmount = 21,
+    UpdateImmutableFlag = 23,
+    // ... and more
+}
+```
+
+See `state/mod.rs:217-253` for the complete list.
+
+### Common Configuration Updates
+
+#### Emergency Mode
+
+Disable all borrowing and enable liquidations:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateEmergencyMode,
+    encodeValue({ Bool: true })
+  )
+  .accounts({ signer: marketOwner.publicKey })
+  .rpc();
+```
+
+Emergency mode can be activated by either:
+- Market owner
+- Emergency council (to enable only)
+
+See `handler_update_lending_market.rs:308-314` for authorization logic.
+
+#### Global Borrow Limits
+
+Set maximum total borrowed value across all reserves:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateGlobalAllowedBorrow,
+    encodeValue({ U64: 10_000_000 }) // $10M USD
+  )
+  .rpc();
+```
+
+See `handler_update_lending_market.rs:57-59`.
+
+#### Liquidation Parameters
+
+**Close Factor** - Maximum portion of debt that can be liquidated at once:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateLiquidationCloseFactor,
+    encodeValue({ U8: 50 }) // 50%
+  )
+  .rpc();
+```
+
+Valid range: 5-100%. See `handler_update_lending_market.rs:47-50`.
+
+**Max Liquidatable Value** - Maximum USD value that can be liquidated in one transaction:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateLiquidationMaxValue,
+    encodeValue({ U64: 1_000_000 }) // $1M
+  )
+  .rpc();
+```
+
+Must be non-zero. See `handler_update_lending_market.rs:52-56`.
+
+**Insolvency Risk LTV** - LTV threshold for close-to-insolvency positions:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateInsolvencyRiskLtv,
+    encodeValue({ U8: 95 }) // 95%
+  )
+  .rpc();
+```
+
+Valid range: 5-100%. See `handler_update_lending_market.rs:71-75`.
+
+#### Elevation Groups
+
+Elevation groups enable isolated lending markets with specific debt assets:
+
+```typescript
+const elevationGroup = {
+  id: 1,
+  ltv_pct: 75,
+  liquidation_threshold_pct: 80,
+  max_liquidation_bonus_bps: 500, // 5%
+  debt_reserve: usdcReserve.publicKey,
+  max_reserves_as_collateral: 5,
+  allow_new_loans: 1,
+};
+
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateElevationGroup,
+    encodeElevationGroup(elevationGroup)
+  )
+  .rpc();
+```
+
+Validation rules (see `handler_update_lending_market.rs:237-276`):
+- ID must be 1-32
+- LTV < liquidation threshold < 100%
+- Max liquidation bonus ≤ 10,000 bps
+- Must specify debt reserve and max collateral count
+- Liquidation threshold + (threshold × bonus) ≤ 100%
+
+#### Referral Fees
+
+Enable protocol-wide referral fee sharing:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateReferralFeeBps,
+    encodeValue({ U16: 2000 }) // 20% of protocol fees
+  )
+  .rpc();
+```
+
+<Warning>
+Changing referral fees may cause unrefreshed obligations to lose accumulated referral fees. Refresh all obligations before updating.
+</Warning>
+
+See `handler_update_lending_market.rs:86-93`.
+
+## Managing Market Ownership
+
+### Ownership Model
+
+Kamino Lending uses a two-step ownership transfer:
+
+1. **Current owner** updates `lending_market_owner_cached` to the new owner address
+2. **New owner** calls `update_lending_market_owner` to accept ownership
+
+This prevents accidental transfers to invalid addresses.
+
+### Transfer Process
+
+**Step 1**: Propose new owner
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateOwner,
+    encodeValue({ Pubkey: newOwner.publicKey })
+  )
+  .accounts({ signer: currentOwner.publicKey })
+  .rpc();
+```
+
+**Step 2**: Accept ownership
+
+```typescript
+await program.methods
+  .updateLendingMarketOwner()
+  .accounts({
+    lendingMarketOwnerCached: newOwner.publicKey,
+    lendingMarket: market.publicKey,
+  })
+  .signers([newOwner])
+  .rpc();
+```
+
+See `handler_update_lending_market_owner.rs:5-16`.
+
+## Market Owner Responsibilities
+
+The market owner has full control over:
+
+- Adding and configuring reserves
+- Updating market-wide parameters
+- Setting emergency mode
+- Transferring ownership
+- Making the market immutable
+
+### Emergency Council
+
+The emergency council can **only**:
+- Enable emergency mode (cannot disable)
+- No other permissions
+
+This provides a safety mechanism independent of the market owner.
+
+## Immutable Markets
+
+Set the immutable flag to prevent most configuration changes:
+
+```typescript
+await program.methods
+  .updateLendingMarket(
+    UpdateLendingMarketMode.UpdateImmutableFlag,
+    encodeValue({ Bool: true })
+  )
+  .rpc();
+```
+
+<Warning>
+**This action is irreversible!** Once set, the market configuration cannot be changed except by global admin for specific parameters.
+</Warning>
+
+Immutable markets prevent (see `handler_update_lending_market.rs:33-36`):
+- Most `update_lending_market` operations
+- Most `update_reserve_config` operations
+- Ownership transfers
+
+Exceptions:
+- Global admin can still update certain parameters
+- Emergency council can still enable emergency mode
+
+## Best Practices
+
+1. **Test on Devnet**: Always test configuration changes on devnet before applying to mainnet
+2. **Gradual Limits**: Start with conservative limits and adjust based on usage
+3. **Monitor Closely**: Watch for limit hits and utilization after changes
+4. **Document Changes**: Keep a record of all configuration updates
+5. **Use Multisig**: Consider using a multisig wallet as market owner for production
+6. **Emergency Council**: Set a separate emergency council for additional security
+7. **Immutability**: Only set immutable flag after thorough testing and when configuration is final
+
+## Related Instructions
+
+- [Reserve Configuration](/operations/reserve-configuration) - Configure individual reserves
+- [Monitoring](/operations/monitoring) - Track market health and metrics

@@ -1,0 +1,160 @@
+---
+title: "Lending Market Instructions"
+description: "Instructions for initializing and managing lending markets"
+---
+
+## init_lending_market
+
+Initialize a new lending market. This creates the base lending market account that will contain all reserves.
+
+### Signature
+
+```rust
+pub fn init_lending_market(
+    ctx: Context<InitLendingMarket>,
+    quote_currency: [u8; 32]
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="quote_currency" type="[u8; 32]" required>
+  The quote currency identifier (typically USD). Used for price normalization across reserves.
+</ParamField>
+
+### Accounts
+
+<ParamField path="lending_market_owner" type="Signer" required>
+  The owner of the lending market. This account will have administrative privileges.
+  - Must be mutable (pays for initialization)
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market account to initialize.
+  - Must be a zero-initialized account
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+  - Seeds: `["lending_market_auth", lending_market.key()]`
+</ParamField>
+
+<ParamField path="system_program" type="Program<System>" required>
+  The Solana system program.
+</ParamField>
+
+<ParamField path="rent" type="Sysvar<Rent>" required>
+  The Solana rent sysvar.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- Standard Anchor errors if account validation fails
+
+---
+
+## update_lending_market
+
+Update configuration parameters of a lending market. Only the market owner or emergency council can call this.
+
+### Signature
+
+```rust
+pub fn update_lending_market(
+    ctx: Context<UpdateLendingMarket>,
+    mode: u64,
+    value: [u8; VALUE_BYTE_MAX_ARRAY_LEN_MARKET_UPDATE]
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="mode" type="u64" required>
+  The update mode specifying which field to update. Valid modes:
+  - `UpdateOwner`: Update the owner
+  - `UpdateEmergencyMode`: Enable/disable emergency mode (u8 bool)
+  - `UpdateLiquidationCloseFactor`: Set liquidation close factor (5-100)
+  - `UpdateLiquidationMaxValue`: Set max liquidatable debt value
+  - `UpdateGlobalAllowedBorrow`: Set global borrow limit
+  - `UpdateMinFullLiquidationThreshold`: Set minimum full liquidation threshold
+  - `UpdateEmergencyCouncil`: Set emergency council address
+  - `UpdateInsolvencyRiskLtv`: Set insolvency risk LTV (5-100)
+  - `UpdateElevationGroup`: Configure elevation group
+  - `UpdateReferralFeeBps`: Set referral fee in basis points
+  - `UpdatePriceRefreshTriggerToMaxAgePct`: Set price refresh trigger percentage
+  - `UpdateAutodeleverageEnabled`: Enable/disable auto-deleveraging
+  - `UpdateBorrowingDisabled`: Disable/enable borrowing globally
+  - `UpdateMinNetValueObligationPostAction`: Set minimum net value threshold
+  - And many more configuration options
+</ParamField>
+
+<ParamField path="value" type="[u8; VALUE_BYTE_MAX_ARRAY_LEN_MARKET_UPDATE]" required>
+  The new value for the specified field, encoded as bytes.
+</ParamField>
+
+### Accounts
+
+<ParamField path="signer" type="Signer" required>
+  Must be either:
+  - The lending market owner (for all updates)
+  - The emergency council (only for enabling emergency mode)
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market to update.
+  - Must be mutable
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `InvalidSigner`: Signer is not authorized to perform this update
+- `OperationNotPermittedMarketImmutable`: Market is marked as immutable
+- `InvalidConfig`: Configuration value is invalid for the specified mode
+- `InvalidElevationGroupConfig`: Elevation group configuration is invalid
+
+---
+
+## update_lending_market_owner
+
+Transfer ownership of a lending market to the cached owner. This is a two-step process: first cache the new owner with `update_lending_market`, then confirm with this instruction.
+
+### Signature
+
+```rust
+pub fn update_lending_market_owner(
+    ctx: Context<UpdateLendingMarketOwner>
+) -> Result<()>
+```
+
+### Parameters
+
+None.
+
+### Accounts
+
+<ParamField path="lending_market_owner_cached" type="Signer" required>
+  The cached new owner who is accepting ownership.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market whose ownership is being transferred.
+  - Must be mutable
+  - Must have `lending_market_owner_cached` matching the signer
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `OperationNotPermittedMarketImmutable`: Market is marked as immutable
+- Anchor constraint errors if the cached owner doesn't match

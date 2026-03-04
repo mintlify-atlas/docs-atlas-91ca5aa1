@@ -1,0 +1,386 @@
+---
+title: 'Error Codes'
+description: 'Complete reference of Kamino Lending error codes and their meanings'
+---
+
+This page documents all error codes that can be returned by the Kamino Lending protocol. Each error includes its message and context about when it occurs.
+
+## Authority & Permission Errors
+
+Errors related to account ownership, permissions, and authorization.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `InvalidMarketAuthority` | Market authority is invalid | The market authority account does not match the expected authority |
+| `InvalidMarketOwner` | Market owner is invalid | The market owner account does not match the expected owner |
+| `InvalidAccountOwner` | Input account owner is not the program address | An account is not owned by the Kamino Lending program |
+| `InvalidSigner` | Signer is not allowed to perform this action | The transaction signer lacks permission for this operation |
+| `InvalidObligationOwner` | Obligation owner is invalid | The obligation owner does not match the expected owner |
+| `ReferrerStateOwnerMismatch` | Referrer state owner does not match the given signer | The referrer state account owner mismatch |
+| `ObligationOwnersMustMatch` | Obligation owners must match | Multiple obligations in transaction must have same owner |
+
+## Validation Errors
+
+Errors related to invalid inputs, configurations, or account states.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `InvalidAmount` | Input amount is invalid | The provided amount is zero, negative, or otherwise invalid |
+| `InvalidConfig` | Input config value is invalid | Configuration parameter is outside acceptable range |
+| `InvalidAccountInput` | Invalid account input | An account provided to the instruction is invalid |
+| `InvalidOracleConfig` | Input oracle config is invalid | Oracle configuration parameters are invalid |
+| `InvalidFlag` | Invalid lending market config | Lending market configuration flag is invalid |
+| `InvalidBorrowRateCurvePoint` | Invalid borrow rate curve point | Borrow rate curve configuration is invalid |
+| `InvalidUtilizationRate` | Invalid utilization rate | Utilization rate is outside valid range [0, 1] |
+| `InvalidTwapConfig` | Invalid Twap configuration: Twap is enabled but one of the enabled price doesn't have a twap | TWAP validation requires all price sources to support TWAP |
+| `InvalidObligationSeedsValue` | Seeds must be default pubkeys for tag 0, and mint addresses for tag 1 or 2 | Obligation PDA seeds do not match requirements |
+| `DeprecatedInvalidObligationId` | [DEPRECATED] Obligation id must be 0 | Legacy error for deprecated obligation ID validation |
+| `InvalidOrderConfiguration` | Given order configuration has wrong parameters | Order parameters are invalid or conflicting |
+| `OrderConfigurationNotSupportedByObligation` | Given order configuration cannot be used with the current state of the obligation | Order type incompatible with current obligation state |
+| `NonUpdatableOrderConfiguration` | Some piece of the order's configuration cannot be updated (the order should be cancelled and placed again) | Certain order fields require cancellation and re-creation |
+| `InvalidTokenAccountState` | Token account is in a state preventing the handler's operation (e.g. frozen or delegate) | Token account has delegate set or is frozen |
+
+## Math & Overflow Errors
+
+Errors related to mathematical operations and numeric conversions.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `MathOverflow` | Math operation overflow | Arithmetic operation resulted in overflow |
+| `IntegerOverflow` | Conversion between integers failed | Integer conversion would overflow or underflow |
+
+## Oracle & Price Errors
+
+Errors related to price feeds and oracle validation.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `SwitchboardV2Error` | Switchboard error | Error reading or validating Switchboard oracle data |
+| `CouldNotDeserializeScope` | Cannot deserialize the scope price account | Scope oracle account data is malformed |
+| `PriceTooOld` | Price too old | Oracle price timestamp exceeds maximum staleness |
+| `PriceTooDivergentFromTwap` | Price too divergent from twap | Current price deviates too much from TWAP |
+| `InvalidTwapPrice` | Invalid twap price | TWAP calculation failed or returned invalid value |
+| `PriceNotValid` | Price is not valid | Oracle price failed validation checks |
+| `PriceIsBiggerThanHeuristic` | Price is bigger than allowed by heuristic | Price exceeds heuristic upper bound |
+| `PriceIsLowerThanHeuristic` | Price lower than allowed by heuristic | Price below heuristic lower bound |
+| `PriceIsZero` | Price is zero | Oracle returned zero price |
+| `PriceConfidenceTooWide` | Price confidence too wide | Oracle confidence interval too large |
+| `NoPriceFound` | No price found | No valid price available from any oracle |
+| `InvalidPythPriceAccount` | Pyth price account does not match configuration | Pyth account doesn't match reserve config |
+| `InvalidSwitchboardAccount` | Switchboard account(s) do not match configuration | Switchboard account doesn't match reserve config |
+| `InvalidScopePriceAccount` | Scope price account does not match configuration | Scope account doesn't match reserve config |
+
+## Reserve State Errors
+
+Errors related to reserve accounts and their state.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `ReserveStale` | Reserve state needs to be refreshed | Reserve must be refreshed before this operation |
+| `InsufficientLiquidity` | Insufficient liquidity available | Reserve has insufficient available liquidity |
+| `NoFarmForReserve` | This reserve does not have a farm | Farm operations attempted on reserve without farms |
+| `ReserveDeprecated` | Reserve was deprecated, no longer usable | Reserve marked as deprecated, no operations allowed |
+| `ReserveObsolete` | Reserve is marked as obsolete | Reserve marked obsolete, limited operations only |
+| `ReserveTokenBalanceMismatch` | Reserve state and token account cannot drift | Reserve accounting doesn't match token balance |
+| `ReserveVaultBalanceMismatch` | Reserve token account has been unexpectedly modified | Reserve vault balance changed unexpectedly |
+| `ReserveAccountingMismatch` | Reserve internal state accounting has been unexpectedly modified | Reserve internal accounting inconsistency detected |
+| `ReserveHasNotReceivedInitialDeposit` | Reserve has not received the initial deposit, cannot update config | Initial admin deposit required before config updates |
+| `InitialAdminDepositExecuted` | Initial admin deposit in reserve already executed | Cannot execute initial deposit twice |
+| `ReserveDebtMaturityReached` | Cannot borrow from a reserve that reached its debt maturity timestamp | Reserve debt term has ended |
+
+## Withdraw Errors
+
+Errors related to withdrawal operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `WithdrawTooSmall` | Withdraw amount too small | Withdrawal amount below minimum threshold |
+| `WithdrawTooLarge` | Withdraw amount too large | Withdrawal exceeds available amount |
+| `WithdrawalCapReached` | Withdrawal cap is reached | Reserve withdrawal cap has been reached |
+| `MaximumWithdrawValueZero` | Maximum withdrawable value of this collateral is zero, LTV needs improved | Cannot withdraw this collateral with current LTV |
+| `LowestLtvAssetsPriority` | Withdrawing must prioritize the collateral with the lowest reserve max-LTV | Must withdraw lowest-LTV collateral first |
+
+## Borrow Errors
+
+Errors related to borrowing operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `BorrowTooSmall` | Borrow amount too small to receive liquidity after fees | Borrow amount insufficient after fees |
+| `BorrowTooLarge` | Borrow amount too large for deposited collateral | Borrow would exceed collateral value |
+| `BorrowingDisabled` | Borrowing is disabled | Borrowing globally disabled |
+| `BorrowLimitExceeded` | Cannot borrow above borrow limit | Reserve or elevation group borrow limit reached |
+| `BorrowingDisabledOutsideElevationGroup` | Reserve does not accept any new borrows outside elevation group | Borrowing restricted to elevation group |
+| `BorrowingAboveUtilizationRateDisabled` | Borrowing above set utilization rate is disabled | Cannot borrow when utilization exceeds threshold |
+
+## Repay Errors
+
+Errors related to repayment operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `RepayTooSmall` | Repay amount too small to transfer liquidity | Repayment amount too small |
+| `RepayTooSmallForFullLiquidation` | Repay amount is too small to satisfy the mandatory full liquidation | Full liquidation requires higher repay amount |
+| `InsufficientRepayAmount` | Liquidator provided repay amount lower than required by liquidation rules | Repay amount below liquidation minimum |
+
+## Liquidation Errors
+
+Errors related to liquidation operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `LiquidationTooSmall` | Liquidation amount too small to receive collateral | Liquidation amount below minimum |
+| `ObligationHealthy` | Cannot liquidate healthy obligations | Obligation LTV is not unhealthy |
+| `LiquidationRewardTooSmall` | The reward amount is less than the minimum acceptable received liquidity | Liquidation reward below minimum acceptable |
+| `LiquidationBorrowFactorPriority` | Liquidation must prioritize the debt with the highest borrow factor | Must liquidate highest borrow factor debt first |
+| `LiquidationLowestLiquidationLtvPriority` | Liquidation must prioritize the collateral with the lowest liquidation LTV | Must liquidate lowest LTV collateral first |
+| `CollateralNonLiquidatable` | This collateral cannot be liquidated (LTV set to 0) | Collateral with 0% LTV cannot be liquidated |
+
+## Obligation Errors
+
+Errors related to obligation accounts and their state.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `ObligationStale` | Obligation state needs to be refreshed | Obligation must be refreshed before operation |
+| `ObligationReserveLimit` | Obligation reserve limit exceeded | Obligation has too many reserves |
+| `ObligationDepositsEmpty` | Obligation deposits are empty | Operation requires deposits |
+| `ObligationBorrowsEmpty` | Obligation borrows are empty | Operation requires borrows |
+| `ObligationDepositsZero` | Obligation deposits have zero value | Deposits exist but have zero value |
+| `ObligationBorrowsZero` | Obligation borrows have zero value | Borrows exist but have zero value |
+| `InvalidObligationCollateral` | Invalid obligation collateral | Collateral account or state is invalid |
+| `InvalidObligationLiquidity` | Invalid obligation liquidity | Liquidity account or state is invalid |
+| `ObligationCollateralEmpty` | Obligation collateral is empty | Operation requires collateral |
+| `ObligationLiquidityEmpty` | Obligation liquidity is empty | Operation requires liquidity/borrows |
+| `ObligationCollateralLtvZero` | The obligation has one collateral with an LTV set to 0. Withdraw it before withdrawing other collaterals | Must withdraw 0% LTV collateral first |
+| `ObligationEmpty` | Obligation has no borrows or deposits | Obligation is completely empty |
+| `ObligationInObsoleteReserve` | Obligation has a deposit or borrow in an obsolete reserve | Cannot operate on obligation with obsolete reserves |
+| `ObligationCurrentlyMarkedForDeleveraging` | Obligation is already marked for deleveraging | Obligation in deleveraging state |
+| `ZeroMaxLtvAssetsInDeposits` | No max LTV 0 assets allowed in deposits for repay and withdraw | Cannot have 0% LTV assets for this operation |
+| `ObligationCollateralExceedsElevationGroupLimit` | Obligation have more collateral than the maximum allowed by the elevation group | Too many collateral reserves for elevation group |
+| `ObligationElevationGroupMultipleDebtReserve` | Obligation is an elevation group but have more than one debt reserve | Elevation group obligations can only have one debt |
+| `ObligationsMustMatch` | Obligations must match | Multiple obligation accounts must be identical |
+
+## Deposit & Withdrawal Limit Errors
+
+Errors related to deposit and withdrawal limits.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `DepositLimitExceeded` | Cannot deposit above deposit limit | Reserve deposit limit reached |
+| `DepositDisabledOutsideElevationGroup` | Can't deposit into this reserve outside elevation group | Deposits restricted to elevation group |
+
+## Flash Loan Errors
+
+Errors related to flash loan operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `FlashBorrowCpi` | No cpi flash borrows allowed | Flash borrows via CPI not permitted |
+| `NoFlashRepayFound` | No corresponding repay found for flash borrow | Flash borrow missing matching repay |
+| `InvalidFlashRepay` | Invalid repay found | Flash repay validation failed |
+| `FlashRepayCpi` | No cpi flash repays allowed | Flash repays via CPI not permitted |
+| `MultipleFlashBorrows` | Multiple flash borrows not allowed in the same transaction | Only one flash borrow per transaction |
+| `FlashLoansDisabled` | Flash loans are disabled for this reserve | Reserve does not allow flash loans |
+
+## Elevation Group Errors
+
+Errors related to elevation group functionality.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `IsolatedAssetTierViolation` | Isolated Asset Tier Violation | Operation violates isolated asset tier rules |
+| `InconsistentElevationGroup` | The obligation's elevation group and the reserve's are not the same | Elevation group mismatch |
+| `InvalidElevationGroup` | The elevation group chosen for the reserve does not exist in the lending market | Non-existent elevation group |
+| `InvalidElevationGroupConfig` | The elevation group updated has wrong parameters set | Invalid elevation group configuration |
+| `UnhealthyElevationGroupLtv` | The current obligation must have most or all its debt repaid before changing the elevation group | LTV too high for elevation group change |
+| `ElevationGroupNewLoansDisabled` | Elevation group does not accept any new loans or any new borrows/withdrawals | Elevation group closed to new activity |
+| `ElevationGroupAlreadyActivated` | Obligation already part of the same elevation group | Cannot join already-active elevation group |
+| `ElevationGroupBorrowLimitExceeded` | Elevation group borrow limit exceeded | Elevation group borrow cap reached |
+| `ElevationGroupWithoutDebtReserve` | The elevation group does not have a debt reserve defined | Elevation group missing debt reserve |
+| `ElevationGroupMaxCollateralReserveZero` | The elevation group does not allow any collateral reserves | Elevation group doesn't accept collateral |
+| `ElevationGroupHasAnotherDebtReserve` | In elevation group attempt to borrow from a reserve that is not the debt reserve | Can only borrow from designated debt reserve |
+| `ElevationGroupDebtReserveAsCollateral` | The elevation group's debt reserve cannot be used as a collateral reserve | Debt reserve cannot be collateral |
+
+## Referrer Errors
+
+Errors related to the referrer system.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `ReferrerAccountNotInitialized` | Referrer account not initialized | Referrer account doesn't exist |
+| `ReferrerAccountMintMissmatch` | Referrer account mint does not match the operation reserve mint | Referrer account mint mismatch |
+| `ReferrerAccountWrongAddress` | Referrer account address is not a valid program address | Invalid referrer account PDA |
+| `ReferrerAccountReferrerMissmatch` | Referrer account referrer does not match the owner referrer | Referrer mismatch |
+| `ReferrerAccountMissing` | Referrer account missing for obligation with referrer | Obligation has referrer but account missing |
+| `InsufficientReferralFeesToRedeem` | Insufficient referral fees to claim or no liquidity available | Not enough referral fees to claim |
+| `ShortUrlNotAsciiAlphanumeric` | Referrer short_url is not ascii alphanumeric | Short URL contains invalid characters |
+
+## Fee & Protocol Errors
+
+Errors related to fees and protocol operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `InsufficientProtocolFeesToRedeem` | Insufficient protocol fees to claim or no liquidity available | Not enough protocol fees or liquidity |
+| `CannotSocializeObligationWithCollateral` | Obligation hasn't been fully liquidated and debt cannot be socialized | Cannot socialize debt with remaining collateral |
+
+## Interest Rate Errors
+
+Errors related to interest rate calculations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `NegativeInterestRate` | Interest rate is negative | Calculated interest rate is negative |
+
+## Emergency Mode Errors
+
+Errors related to emergency mode functionality.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `GlobalEmergencyMode` | Emergency mode is enabled | Market in emergency mode, operations restricted |
+
+## Instruction & CPI Errors
+
+Errors related to instruction execution and cross-program invocations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `IncorrectInstructionInPosition` | Wrong instruction at expected position | Instruction ordering validation failed |
+| `CpiDisabled` | CPI disabled for this instruction | Cross-program invocation not allowed |
+| `TransactionIncludesRestrictedPrograms` | Transaction includes restricted programs | Transaction contains forbidden programs |
+
+## Timestamp Errors
+
+Errors related to timestamp validation.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `LastTimestampGreaterThanCurrent` | The last interval start timestamp is greater than the current timestamp | Invalid timestamp ordering |
+| `CannotCalculateReferralAmountDueToSlotsMismatch` | Cannot calculate referral amount due to slots mismatch | Slot mismatch prevents referral calculation |
+
+## LTV & Risk Errors
+
+Errors related to loan-to-value ratios and risk management.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `NetValueRemainingTooSmall` | Net value remaining too small | Net value too low after operation |
+| `WorseLtvBlocked` | Cannot get the obligation in a worse position | Operation would worsen LTV |
+| `LiabilitiesBiggerThanAssets` | Cannot have more liabilities than assets in a position | Liabilities exceed assets |
+| `WorseLtvThanUnhealthyLtv` | Cannot get the obligation liquidatable | Operation would make obligation liquidatable |
+
+## User Metadata Errors
+
+Errors related to user metadata accounts.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `UserMetadataOwnerAlreadySet` | User metadata owner is already set | Cannot change user metadata owner |
+
+## Market & Configuration Errors
+
+Errors related to market configuration and updates.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `OperationNotPermittedMarketImmutable` | Cannot update lending market because it is set as immutable | Market marked immutable |
+| `LendingMarketsMustMatch` | Lending markets must match | Multiple markets in transaction must match |
+| `NoUpgradeAuthority` | Cannot initialize global config because there is no upgrade authority to the program | Program missing upgrade authority |
+
+## Order & Trading Errors
+
+Errors related to borrow orders and order execution.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `OrderIndexOutOfBounds` | Obligation order of the given index cannot exist | Order index exceeds bounds |
+| `OperationNotPermittedWithCurrentObligationOrders` | Single debt, single collateral obligation orders have to be cancelled before changing the deposit/borrow count | Cancel orders before changing reserves |
+| `OrderCreationDisabled` | Creation of new orders is disabled | Cannot create new orders |
+| `BorrowOrderDebtLiquidityMintMismatch` | There is no borrow order requesting debt in the given asset | Borrow order mint doesn't match |
+| `BorrowOrderMaxBorrowRateExceeded` | Reserve used for fill exceeds the maximum borrow rate specified by the order | Borrow rate too high for order |
+| `BorrowOrderMinDebtTermInsufficient` | Reserve used for fill defines a debt term shorter than specified by the order | Debt term too short for order |
+| `BorrowOrderFillTimeLimitExceeded` | Borrow order can no longer be filled | Order fill deadline passed |
+| `BorrowOrderExecutionDisabled` | Execution of borrow orders is disabled | Cannot execute borrow orders |
+| `BorrowOrderFillValueTooSmall` | Available liquidity could not satisfy the minimum required borrow order fill value | Insufficient liquidity for order fill |
+| `DebtReachedReserveDebtTerm` | Cannot increase the debt that has reached its end of term configured by the reserve | Debt term ended, cannot increase |
+| `ExpectationNotMet` | The on-chain state does not meet expectation specified by the caller, so the operation must be aborted (to avoid race conditions) | State changed, operation aborted |
+
+## Token & Account Errors
+
+Errors related to token accounts and SPL token operations.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `UnsupportedTokenExtension` | Mint has a token (2022) extension that is not supported | Token-2022 extension not supported |
+| `InvalidTokenAccount` | Can't have an spl token mint with a t22 account | SPL token mint with Token-2022 account |
+| `CTokenUsageBlocked` | CToken minting/redeeming is blocked for this reserve | cToken operations disabled |
+| `CannotUseSameReserve` | Cannot call ix with same reserve | Instruction requires different reserves |
+| `UserTokenBalanceMismatch` | The user's token account has changed its balance in an unexpected way | User token balance changed unexpectedly |
+
+## Withdraw Ticket Errors
+
+Errors related to the withdraw ticket system for queued withdrawals.
+
+| Error | Message | Description |
+|-------|---------|-------------|
+| `WithdrawTicketIssuanceDisabled` | Issuing new withdraw tickets is disabled by the market | Cannot create new withdraw tickets |
+| `WithdrawTicketRedemptionDisabled` | Redeeming withdraw tickets is disabled by the market | Cannot redeem withdraw tickets |
+| `WithdrawTicketStillValid` | Recovering collateral is only available after the withdraw ticket has been marked invalid | Ticket still valid, cannot recover |
+| `WithdrawTicketRequiresFullRedemption` | The withdraw ticket's current state requires that it is fully redeemed (e.g. due to owner ATA creation), but there is not enough liquidity | Must fully redeem ticket but insufficient liquidity |
+| `WithdrawQueuedLiquidityValueTooSmall` | Available liquidity could not satisfy the minimum required ticketed withdrawal value | Insufficient liquidity for queued withdrawal |
+| `WithdrawTicketInvalid` | Cannot use ticket that was already marked invalid | Ticket marked invalid |
+
+## Troubleshooting Tips
+
+### Common Error Scenarios
+
+**Stale State Errors (`ReserveStale`, `ObligationStale`)**
+- Call `refresh_reserve` before reserve operations
+- Call `refresh_obligation` before obligation operations
+- These are required before most state-changing operations
+
+**Insufficient Liquidity Errors**
+- Check reserve available liquidity before borrow/withdraw
+- Consider using withdrawal queue for large withdrawals
+- May need to wait for repayments to free up liquidity
+
+**Oracle/Price Errors**
+- Ensure oracle accounts match reserve configuration
+- Check price staleness and update frequency
+- Verify confidence intervals are acceptable
+
+**LTV Errors (`BorrowTooLarge`, `WithdrawTooLarge`)**
+- Check current obligation LTV after refresh
+- Account for price movements affecting collateral value
+- Consider depositing more collateral before borrowing
+
+**Elevation Group Errors**
+- Verify obligation and reserve elevation groups match
+- Check elevation group configuration and limits
+- Ensure elevation group accepts new loans
+
+**Order Errors**
+- Verify order configuration parameters
+- Check fill time limits haven't expired
+- Ensure sufficient liquidity for order execution
+
+### Error Handling Best Practices
+
+1. **Always refresh state** - Call refresh instructions before operations
+2. **Check limits** - Verify borrow/deposit limits before operations
+3. **Handle race conditions** - Use `ExpectationNotMet` to detect state changes
+4. **Validate oracles** - Ensure oracle accounts match configuration
+5. **Monitor elevation groups** - Verify elevation group compatibility
+6. **Test with small amounts** - Start with minimum amounts to validate operations
+
+### Getting Help
+
+If you encounter an error you cannot resolve:
+
+1. Check the error message and this reference
+2. Verify all account inputs match expected configuration
+3. Ensure state is refreshed before operations
+4. Review the [integration guides](/integration/setup) for proper usage
+5. Consult the [program reference](/reference/instructions/overview) for detailed instruction requirements

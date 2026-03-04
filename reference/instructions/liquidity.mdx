@@ -1,0 +1,530 @@
+---
+title: "Liquidity Instructions"
+description: "Instructions for depositing, borrowing, and repaying liquidity"
+---
+
+## deposit_reserve_liquidity
+
+Deposit liquidity tokens into a reserve and receive collateral tokens (cTokens) in return.
+
+### Signature
+
+```rust
+pub fn deposit_reserve_liquidity(
+    ctx: Context<DepositReserveLiquidity>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of liquidity to deposit (in token native units).
+</ParamField>
+
+### Accounts
+
+<ParamField path="owner" type="Signer" required>
+  The owner of the source liquidity tokens.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to deposit into.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's collateral token mint.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's source liquidity token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_destination_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination collateral token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="collateral_token_program" type="Program<Token>" required>
+  The SPL Token program (for collateral).
+</ParamField>
+
+<ParamField path="liquidity_token_program" type="Interface<TokenInterface>" required>
+  The token program for liquidity (SPL Token or Token-2022).
+</ParamField>
+
+<ParamField path="instruction_sysvar_account" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled (via access control)
+- `WithdrawTooSmall`: Deposit amount is too small
+- `DepositLimitExceeded`: Deposit would exceed reserve's deposit limit
+
+---
+
+## deposit_reserve_liquidity_and_obligation_collateral
+
+Deposit liquidity into a reserve and immediately add the collateral to an obligation in a single transaction.
+
+### Signature
+
+```rust
+pub fn deposit_reserve_liquidity_and_obligation_collateral_v2(
+    ctx: Context<DepositReserveLiquidityAndObligationCollateralV2>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of liquidity to deposit.
+</ParamField>
+
+### Accounts
+
+<ParamField path="deposit_accounts.owner" type="Signer" required>
+  The owner of the obligation and source liquidity.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation to add collateral to.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="deposit_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="deposit_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve_liquidity_supply" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve_collateral_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's collateral token mint.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.reserve_destination_deposit_collateral" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's collateral supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="deposit_accounts.user_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's source liquidity token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `ObligationReserveLimit`: Obligation has too many different collateral types
+- `IsolatedAssetTierViolation`: Collateral violates isolated asset rules
+
+---
+
+## borrow_obligation_liquidity
+
+Borrow liquidity from a reserve against an obligation's collateral.
+
+### Signature
+
+```rust
+pub fn borrow_obligation_liquidity_v2<'info>(
+    ctx: Context<'_, '_, '_, 'info, BorrowObligationLiquidityV2<'info>>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of liquidity to borrow. Use `u64::MAX` to borrow the maximum available.
+</ParamField>
+
+### Accounts
+
+<ParamField path="borrow_accounts.owner" type="Signer" required>
+  The owner of the obligation.
+</ParamField>
+
+<ParamField path="borrow_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+  - Must have the specified owner
+</ParamField>
+
+<ParamField path="borrow_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="borrow_accounts.lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="borrow_accounts.borrow_reserve" type="AccountLoader<Reserve>" required>
+  The reserve to borrow from.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="borrow_accounts.borrow_reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The borrow reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="borrow_accounts.reserve_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="borrow_accounts.borrow_reserve_liquidity_fee_receiver" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's fee receiver vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="borrow_accounts.user_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination liquidity token account.
+  - Must be mutable
+  - Must have owner as authority
+</ParamField>
+
+<ParamField path="borrow_accounts.referrer_token_state" type="Option<AccountLoader<ReferrerTokenState>>" required>
+  Optional referrer token state (required if obligation has a referrer).
+  - Must be mutable
+</ParamField>
+
+<ParamField path="borrow_accounts.token_program" type="Interface<TokenInterface>" required>
+  The token program.
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Remaining Accounts
+
+All deposit reserves for the obligation (to calculate collateral value).
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `BorrowTooSmall`: Borrow amount is too small
+- `BorrowTooLarge`: Insufficient collateral for borrow
+- `InsufficientLiquidity`: Reserve doesn't have enough liquidity
+- `BorrowingDisabled`: Borrowing is disabled globally or for this reserve
+- `ReferrerAccountMissing`: Obligation has referrer but no referrer account provided
+
+---
+
+## repay_obligation_liquidity
+
+Repay borrowed liquidity for an obligation.
+
+### Signature
+
+```rust
+pub fn repay_obligation_liquidity_v2(
+    ctx: Context<RepayObligationLiquidityV2>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+<Note>Use the v2 variant which includes farming support. The v1 variant is deprecated.</Note>
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of liquidity to repay. Use `u64::MAX` to repay all.
+</ParamField>
+
+### Accounts
+
+<ParamField path="repay_accounts.owner" type="Signer" required>
+  The owner of the obligation (or anyone repaying on their behalf).
+</ParamField>
+
+<ParamField path="repay_accounts.obligation" type="AccountLoader<Obligation>" required>
+  The obligation.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="repay_accounts.lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="repay_accounts.repay_reserve" type="AccountLoader<Reserve>" required>
+  The reserve to repay.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="repay_accounts.reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="repay_accounts.reserve_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="repay_accounts.user_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's source liquidity token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="repay_accounts.token_program" type="Interface<TokenInterface>" required>
+  The token program.
+</ParamField>
+
+<ParamField path="farms_accounts" type="OptionalObligationFarmsAccounts" required>
+  Optional farming accounts (v2 only).
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority (v2 only).
+</ParamField>
+
+<ParamField path="farms_program" type="Program<Farms>" required>
+  The Kamino Farms program (v2 only).
+</ParamField>
+
+### Remaining Accounts
+
+All deposit reserves for the obligation (to update health factor).
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `RepayTooSmall`: Repay amount is too small
+- `TransactionIncludesRestrictedPrograms`: Transaction contains restricted programs
+
+---
+
+## flash_borrow_reserve_liquidity
+
+Borrow liquidity from a reserve with a flash loan. Must be repaid in the same transaction with `flash_repay_reserve_liquidity`.
+
+### Signature
+
+```rust
+pub fn flash_borrow_reserve_liquidity(
+    ctx: Context<FlashBorrowReserveLiquidity>,
+    liquidity_amount: u64
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount of liquidity to flash borrow.
+</ParamField>
+
+### Accounts
+
+<ParamField path="user_transfer_authority" type="Signer" required>
+  The authority for the user's token account.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve to borrow from.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="reserve_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's destination liquidity token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_fee_receiver" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's fee receiver vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="referrer_token_state" type="Option<AccountLoader<ReferrerTokenState>>" required>
+  Optional referrer token state.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="sysvar_info" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `FlashLoansDisabled`: Flash loans are disabled for this reserve
+- `FlashBorrowCpi`: Flash borrows cannot be called via CPI
+- `MultipleFlashBorrows`: Multiple flash borrows in same transaction
+
+---
+
+## flash_repay_reserve_liquidity
+
+Repay a flash loan borrowed with `flash_borrow_reserve_liquidity`.
+
+### Signature
+
+```rust
+pub fn flash_repay_reserve_liquidity(
+    ctx: Context<FlashRepayReserveLiquidity>,
+    liquidity_amount: u64,
+    borrow_instruction_index: u8
+) -> Result<()>
+```
+
+### Parameters
+
+<ParamField path="liquidity_amount" type="u64" required>
+  The amount originally borrowed (fees are added automatically).
+</ParamField>
+
+<ParamField path="borrow_instruction_index" type="u8" required>
+  The index in the transaction of the corresponding `flash_borrow_reserve_liquidity` instruction.
+</ParamField>
+
+### Accounts
+
+<ParamField path="user_transfer_authority" type="Signer" required>
+  The authority for the user's token account.
+</ParamField>
+
+<ParamField path="lending_market_authority" type="AccountInfo" required>
+  PDA authority for the lending market.
+</ParamField>
+
+<ParamField path="lending_market" type="AccountLoader<LendingMarket>" required>
+  The lending market.
+</ParamField>
+
+<ParamField path="reserve" type="AccountLoader<Reserve>" required>
+  The reserve.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_mint" type="InterfaceAccount<Mint>" required>
+  The reserve's liquidity token mint.
+</ParamField>
+
+<ParamField path="reserve_destination_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's liquidity supply vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="user_source_liquidity" type="InterfaceAccount<TokenAccount>" required>
+  The user's source liquidity token account.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="reserve_liquidity_fee_receiver" type="InterfaceAccount<TokenAccount>" required>
+  The reserve's fee receiver vault.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="referrer_token_state" type="Option<AccountLoader<ReferrerTokenState>>" required>
+  Optional referrer token state.
+  - Must be mutable
+</ParamField>
+
+<ParamField path="sysvar_info" type="AccountInfo" required>
+  The Solana instructions sysvar.
+</ParamField>
+
+### Returns
+
+Returns `Ok(())` on success.
+
+### Errors
+
+- `GlobalEmergencyMode`: Emergency mode is enabled
+- `NoFlashRepayFound`: No matching flash borrow found
+- `InvalidFlashRepay`: Repay doesn't match borrow
+- `FlashRepayCpi`: Flash repays cannot be called via CPI
