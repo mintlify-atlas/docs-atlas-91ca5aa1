@@ -29,6 +29,7 @@ Manage reserve configuration, initialization, and maintenance.
 | Instruction | Description |
 |------------|-------------|
 | [init_reserve](/reference/instructions/reserve#init_reserve) | Initialize a new reserve |
+| seed_deposit_on_init_reserve | Initial deposit to reserve (prevents empty reserve) |
 | [init_farms_for_reserve](/reference/instructions/reserve#init_farms_for_reserve) | Initialize farming rewards for a reserve |
 | [update_reserve_config](/reference/instructions/reserve#update_reserve_config) | Update reserve configuration |
 | [refresh_reserve](/reference/instructions/reserve#refresh_reserve) | Refresh reserve state and interest rates |
@@ -45,9 +46,12 @@ Manage user obligations (positions).
 | Instruction | Description |
 |------------|-------------|
 | [init_obligation](/reference/instructions/obligation#init_obligation) | Initialize a new obligation |
+| init_user_metadata | Initialize user metadata account |
 | [init_obligation_farms_for_reserve](/reference/instructions/obligation#init_obligation_farms_for_reserve) | Initialize farming for an obligation |
 | [refresh_obligation](/reference/instructions/obligation#refresh_obligation) | Refresh obligation state |
 | [refresh_obligation_farms_for_reserve](/reference/instructions/obligation#refresh_obligation_farms_for_reserve) | Refresh obligation farming state |
+| request_elevation_group | Request elevation group membership |
+| set_obligation_order | Set obligation order (limit order for collateral) |
 
 ### Liquidity Instructions
 
@@ -56,9 +60,14 @@ Deposit, borrow, and repay operations.
 | Instruction | Description |
 |------------|-------------|
 | [deposit_reserve_liquidity](/reference/instructions/liquidity#deposit_reserve_liquidity) | Deposit liquidity into a reserve |
-| [deposit_reserve_liquidity_and_obligation_collateral](/reference/instructions/liquidity#deposit_reserve_liquidity_and_obligation_collateral) | Deposit and use as collateral in one step |
-| [borrow_obligation_liquidity](/reference/instructions/liquidity#borrow_obligation_liquidity) | Borrow liquidity from a reserve |
-| [repay_obligation_liquidity](/reference/instructions/liquidity#repay_obligation_liquidity) | Repay borrowed liquidity |
+| [deposit_reserve_liquidity_and_obligation_collateral](/reference/instructions/liquidity#deposit_reserve_liquidity_and_obligation_collateral) | Deposit and use as collateral in one step (deprecated, use v2) |
+| deposit_reserve_liquidity_and_obligation_collateral_v2 | Deposit and use as collateral (current version) |
+| [borrow_obligation_liquidity](/reference/instructions/liquidity#borrow_obligation_liquidity) | Borrow liquidity from a reserve (deprecated, use v2) |
+| borrow_obligation_liquidity_v2 | Borrow liquidity from a reserve (current version) |
+| set_borrow_order | Create or update a borrow order (limit order) |
+| fill_borrow_order | Fill an existing borrow order |
+| [repay_obligation_liquidity](/reference/instructions/liquidity#repay_obligation_liquidity) | Repay borrowed liquidity (deprecated, use v2) |
+| repay_obligation_liquidity_v2 | Repay borrowed liquidity (current version) |
 | [flash_borrow_reserve_liquidity](/reference/instructions/liquidity#flash_borrow_reserve_liquidity) | Flash borrow liquidity |
 | [flash_repay_reserve_liquidity](/reference/instructions/liquidity#flash_repay_reserve_liquidity) | Flash repay borrowed liquidity |
 
@@ -69,9 +78,15 @@ Manage collateral deposits and withdrawals.
 | Instruction | Description |
 |------------|-------------|
 | [redeem_reserve_collateral](/reference/instructions/collateral#redeem_reserve_collateral) | Redeem collateral tokens for liquidity |
-| [deposit_obligation_collateral](/reference/instructions/collateral#deposit_obligation_collateral) | Deposit collateral to an obligation |
-| [withdraw_obligation_collateral](/reference/instructions/collateral#withdraw_obligation_collateral) | Withdraw collateral from an obligation |
-| [withdraw_obligation_collateral_and_redeem_reserve_collateral](/reference/instructions/collateral#withdraw_obligation_collateral_and_redeem_reserve_collateral) | Withdraw and redeem in one step |
+| [deposit_obligation_collateral](/reference/instructions/collateral#deposit_obligation_collateral) | Deposit collateral to an obligation (deprecated, use v2) |
+| deposit_obligation_collateral_v2 | Deposit collateral to an obligation (current version) |
+| [withdraw_obligation_collateral](/reference/instructions/collateral#withdraw_obligation_collateral) | Withdraw collateral from an obligation (deprecated, use v2) |
+| withdraw_obligation_collateral_v2 | Withdraw collateral from an obligation (current version) |
+| [withdraw_obligation_collateral_and_redeem_reserve_collateral](/reference/instructions/collateral#withdraw_obligation_collateral_and_redeem_reserve_collateral) | Withdraw and redeem in one step (deprecated, use v2) |
+| withdraw_obligation_collateral_and_redeem_reserve_collateral_v2 | Withdraw and redeem (current version) |
+| enqueue_to_withdraw | Queue a withdrawal for later processing |
+| withdraw_queued_liquidity | Process queued withdrawal |
+| recover_invalid_ticket_collateral | Recover collateral from invalid withdraw ticket |
 
 ### Liquidation Instructions
 
@@ -79,13 +94,62 @@ Liquidate unhealthy positions.
 
 | Instruction | Description |
 |------------|-------------|
-| [liquidate_obligation_and_redeem_reserve_collateral](/reference/instructions/liquidation#liquidate_obligation_and_redeem_reserve_collateral) | Liquidate an unhealthy obligation |
+| [liquidate_obligation_and_redeem_reserve_collateral](/reference/instructions/liquidation#liquidate_obligation_and_redeem_reserve_collateral) | Liquidate an unhealthy obligation (deprecated, use v2) |
+| liquidate_obligation_and_redeem_reserve_collateral_v2 | Liquidate an unhealthy obligation (current version) |
 | [mark_obligation_for_deleveraging](/reference/instructions/liquidation#mark_obligation_for_deleveraging) | Mark obligation for automatic deleveraging |
+
+### Combined Operations
+
+Atomic multi-step operations for convenience.
+
+| Instruction | Description |
+|------------|-------------|
+| deposit_and_withdraw | Deposit liquidity and withdraw collateral atomically |
+| repay_and_withdraw_and_redeem | Repay debt, withdraw collateral, and redeem atomically |
+
+### Referral Instructions
+
+Manage referral system for fee sharing. See [Referral System](/advanced/referral-system) for details.
+
+| Instruction | Description |
+|------------|-------------|
+| init_referrer_state_and_short_url | Initialize referrer account with short URL |
+| delete_referrer_state_and_short_url | Delete referrer account |
+| init_referrer_token_state | Initialize referrer token state |
+| withdraw_referrer_fees | Withdraw accumulated referral fees |
+
+### Global Config Instructions
+
+Manage global protocol configuration.
+
+| Instruction | Description |
+|------------|-------------|
+| init_global_config | Initialize global configuration |
+| update_global_config | Update global configuration parameters |
+| update_global_config_admin | Update global config admin authority |
 
 ## Versioning
 
-Many instructions have deprecated v1 variants and current v2 variants. The v2 variants include support for farming rewards. Always use v2 variants unless you have a specific reason to use v1.
+<Note>
+Many instructions have deprecated v1 variants and current v2 variants. The v2 variants include support for farming rewards and improved account structure.
+
+**Always use v2 variants for new integrations:**
+- `deposit_obligation_collateral_v2` instead of `deposit_obligation_collateral`
+- `withdraw_obligation_collateral_v2` instead of `withdraw_obligation_collateral`  
+- `borrow_obligation_liquidity_v2` instead of `borrow_obligation_liquidity`
+- `repay_obligation_liquidity_v2` instead of `repay_obligation_liquidity`
+- `deposit_reserve_liquidity_and_obligation_collateral_v2` instead of v1
+- `withdraw_obligation_collateral_and_redeem_reserve_collateral_v2` instead of v1
+- `liquidate_obligation_and_redeem_reserve_collateral_v2` instead of v1
+- `socialize_loss_v2` instead of `socialize_loss`
+
+The v1 instructions are deprecated since version 1.8.0 and may be removed in future versions.
+</Note>
 
 ## Emergency Mode
 
 Most instructions are disabled when the lending market is in emergency mode. Only administrative and refresh operations are allowed during emergency mode.
+
+<Warning>
+Instructions with the `#[access_control(emergency_mode_disabled)]` attribute will fail if the lending market's emergency mode is enabled. Always check the market state before submitting transactions.
+</Warning>
